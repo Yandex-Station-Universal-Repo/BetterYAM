@@ -1,0 +1,29 @@
+name: check
+
+# The checks AGENTS.md asks for, on every push and pull request: formatting,
+# the whole workspace compiling (the device daemons included), the tests, and
+# the shell scripts' syntax.
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Check
+        run: cargo check --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Shell scripts
+        run: |
+          sh -n install.sh
+          sh -n tools/build-daemons.sh
+          sh -n tools/wifi-probe.sh
