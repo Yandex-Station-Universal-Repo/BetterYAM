@@ -14,6 +14,10 @@ strip_device_id() {
   printf '%s' "$1" | LC_ALL=C sed 's/[-_][A-Z0-9]\{4\}$//'
 }
 
+log() {
+  printf '[BetterYAM install] %s\n' "$*" >&2
+}
+
 if [ "$ACTION" = install ]; then
   case "$(uname -s):$(uname -m)" in
     Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
@@ -32,10 +36,33 @@ tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/betteryam.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 download() {
   url=$1 output=$2
+  log "Downloading $(basename "$output") from $url"
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --proto '=https,http' --tlsv1.2 "$url" -o "$output"
+    if http_status=$(curl -sS -L --proto '=https,http' --tlsv1.2 \
+      --write-out '%{http_code}' -o "$output" "$url"); then
+      case "$http_status" in
+        2??) log "Downloaded $(basename "$output") (HTTP $http_status)" ;;
+        *)
+          rm -f "$output"
+          log "HTTP $http_status while downloading $(basename "$output") from $url"
+          return 1
+          ;;
+      esac
+    else
+      curl_status=$?
+      rm -f "$output"
+      log "curl exited with status $curl_status while downloading $(basename "$output") from $url (HTTP ${http_status:-unknown})"
+      return "$curl_status"
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$output" "$url"
+    if wget -O "$output" "$url"; then
+      log "Downloaded $(basename "$output")"
+    else
+      wget_status=$?
+      rm -f "$output"
+      log "wget exited with status $wget_status while downloading $(basename "$output") from $url"
+      return "$wget_status"
+    fi
   else
     echo 'curl or wget is required.' >&2; exit 4
   fi
@@ -124,6 +151,8 @@ STATION_MODEL=$(adb -s "$DEVICE" shell uname -n </dev/null 2>/dev/null | tr -d '
 STATION_MODEL=$(strip_device_id "$STATION_MODEL")
 MODEL_ID=$(printf '%s' "$STATION_MODEL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//')
 [ -n "$MODEL_ID" ] || { echo 'Could not determine a valid station model using uname -n.' >&2; exit 7; }
+log "Selected station $DEVICE: hostname model '$STATION_MODEL' (manifest ID '$MODEL_ID')"
+log "Using release URL $RELEASE_URL"
 
 download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"
 download "$RELEASE_URL/manifest.json" "$tmpdir/manifest.json"
@@ -138,6 +167,7 @@ matches = [
     if sys.argv[2] in device.get("models", [device.get("device", "")])
 ]
 if len(matches) != 1:
+    print(f"release manifest matched {len(matches)} daemon entries for model ID {sys.argv[2]}", file=sys.stderr)
     raise SystemExit(1)
 entry = matches[0]
 for field in ("asset", "sha256sum", "filepath"):
@@ -153,6 +183,7 @@ fi
 IFS="$(printf '\t')" read -r DAEMON_ASSET DAEMON_SHA256 DAEMON_FILEPATH <<EOF
 $DAEMON_RECORD
 EOF
+log "Selected daemon asset $DAEMON_ASSET ($DAEMON_FILEPATH)"
 [ "$(awk -v name="$DAEMON_ASSET" '$2 == name {print $1}' "$tmpdir/SHA256SUMS")" = "$DAEMON_SHA256" ] || {
   echo "Manifest checksum mismatch for $DAEMON_ASSET." >&2; exit 8;
 }
