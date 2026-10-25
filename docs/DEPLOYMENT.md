@@ -23,7 +23,7 @@ irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/re
 
 Unix-установщик поддерживает Linux x86_64 и macOS Apple Silicon. Он загружает
 последний релиз по умолчанию; для конкретной версии передайте её первым
-аргументом, например `sh -s -- 0.1.17`. CLI устанавливается в
+аргументом, например `sh -s -- 0.1.18`. CLI устанавливается в
 `~/.local/bin/byam`; `yam` создаётся как совместимый alias. Если каталог не
 включён в `PATH`, запускайте CLI по полному пути или добавьте `~/.local/bin` в
 `PATH`.

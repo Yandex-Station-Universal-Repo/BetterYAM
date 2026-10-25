@@ -53,11 +53,11 @@ After updating `PATH`, run `byam --help`.
 To install a specific release, pass its version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- 0.1.17
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- 0.1.18
 ```
 
 Alternatively, from a local repository clone run `sh install.sh` (or
-`sh install.sh 0.1.17`). The installer requires `adb`. It selects a supported
+`sh install.sh 0.1.18`). The installer requires `adb`. It selects a supported
 connected station automatically, prompts when multiple stations are connected,
 or asks for the station IP if none is connected yet.
 
