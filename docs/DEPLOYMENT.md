@@ -17,6 +17,8 @@ irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/ma
 Для конкретной версии передайте её первым аргументом (`sh -s -- 0.1.13`). Удаление на Unix: `sh -s -- --uninstall`.
 
 CLI обращается к `http://<колонка>:8099`; адрес можно переопределить `YAM_URL`.
+По умолчанию daemon выбирает активный LAN IPv4-адрес и слушает порт `8099`.
+Задайте `--listen IP:PORT`, чтобы выбрать конкретный интерфейс или порт.
 Каталог сборки — root `manifest.json`. Запустите
 `sh tools/build-daemons.sh`; скрипт собирает все перечисленные устройства и
 создаёт `dist/manifest.json`, daemon assets в `dist/assets/` и `dist/SHA256SUMS`
@@ -60,21 +62,35 @@ plugin runtime, `led.rs` — аппаратную функцию LED.
 | `GET /sensors`, `GET /sensors/{id}` | Список `{id, kind, unit, value}` и чтение сенсора |
 | `POST /sensors/ambient-light/configure` | `{name, gain, integration_ms}` |
 | `GET /clock`, `PUT /clock` | `ClockInfo`; запрос принимает `time`, `brightness`, `segments` или `off` |
-| `GET /volume`, `PUT /volume` | Получение уровня; установка `{percent}` |
+| `GET /api/volume`, `PUT /api/volume` | Получение уровня; установка `{percent}` |
 | `POST /audio/play` | Тело запроса — audio bytes из файла пакета |
-| `GET /bluetooth/status` | JSON-статус |
-| `PUT /bluetooth/power`, `PUT /bluetooth/scan` | `{on: boolean}` |
-| `POST /bluetooth/pair`, `/connect`, `/disconnect`, `/remove` | `{address: MAC}` |
+| `GET /api/bluetooth/status` | JSON-статус |
+| `PUT /api/bluetooth/power` | `{on: boolean}`; доступно только когда Quasar остановлен |
 | `GET /display/backlights` | Список доступных backlight IDs |
 | `PUT /display/backlight` | `{name, value}` |
-| `GET /input/devices` | Список доступных input device names |
-| `POST /input/next-event` | `{devices, timeout_ms}`, ответ — event или `null` |
+| `GET /api/runtime/:id/input/devices` | Разрешённые package input device names; runtime token и permission `input` обязательны |
+| `POST /api/runtime/:id/input/next-event` | `{devices, timeout_ms}`; только объявленные package устройства |
 | `POST /ipc/alarm/next`, `/ipc/speech/next` | `{timeout_ms}`, ответ — event или `null` |
 
-В текущем Mini backend реализован LED ring (`led.ring.rgb` и
-`led.ring.6`). Остальные перечисленные операции/API оставлены в runtime, но
-Mini сообщает для них `capabilities: false` и возвращает понятную ошибку при
-вызове до появления hardware-реализации. Lua сохраняет прежние методы, а
+В текущем Mini backend реализованы LED ring (`led.ring.rgb` и `led.ring.6`),
+чтение доступных Linux input event devices (`input.devices`,
+`input.next_event`) и громкость через ALSA control `Master` на card 0.
+Громкость 0..100 отображается на ALSA integer range; capability включается,
+если `amixer` может прочитать control. Input capability включается только если
+event-устройства доступны daemon-процессу; пакет может читать только имена из
+`[input].devices`. Остальные перечисленные операции/API оставлены в runtime,
+но Mini сообщает для них `capabilities: false` и возвращает понятную ошибку
+до появления hardware-реализации. Bluetooth status читается из `rfkill` и
+`bsa_server`; capability status сохраняется доступной. Включение/выключение вызывает системный
+`bsa_server_run.sh`. Power capability и каждая команда power проверяют
+`pidof quasar_launcher2` и `pidof maind`; при работающем Quasar операция
+отклоняется с причиной `quasar running, not verified`. Проверка выполняется
+при каждом вызове, не только при старте daemon.
+Сканирование, pair/connect/disconnect/remove и управление discoverable
+недоступны: проверенный интерфейс для них требует долгоживущий `bt_demo`,
+который перезапускает `bsa_server`. BetterYAM его не запускает. Из
+`bt_devices.xml` данные и секреты не читаются и не выдаются. Lua сохраняет
+прежние методы, а
 `alice.<api>.is_available()` и `device.capabilities["<capability>"]` позволяют
 проверить доступность без вызова операции. Для сегментов часов сохраняется
 вызов `alice.clock.segments({...})`; теперь этот callable API также предоставляет

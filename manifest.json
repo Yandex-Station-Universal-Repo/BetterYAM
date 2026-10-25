@@ -4,13 +4,14 @@
     {
       "device": "yandexmini",
       "models": [
-        "yandexmini"
+        "yandexmini",
+        "yandexstationmini_c190"
       ],
       "manifest_path": "yandexmini/Cargo.toml",
       "binary": "betteryamd-yandexmini",
-      "asset": "betteryamd-yandexmini-aarch64-linux",
-      "target": "aarch64-unknown-linux-musl",
-      "filepath": "dist/assets/betteryamd-yandexmini-aarch64-linux",
+      "asset": "betteryamd-yandexmini-armv7-linux",
+      "target": "armv7-unknown-linux-musleabihf",
+      "filepath": "dist/assets/betteryamd-yandexmini-armv7-linux",
       "sha256sum": null
     }
   ]

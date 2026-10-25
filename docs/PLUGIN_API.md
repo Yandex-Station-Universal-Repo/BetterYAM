@@ -45,9 +45,16 @@ boolean-словарь `capabilities`, заполненные модельным
 `alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
 использует `device.led_count`; проверку frame выполняет драйвер этой модели.
 
-Например, текущий Yandex Mini backend сообщает `led.ring.rgb` и `led.ring.6`
-как доступные; clock, volume, audio, Bluetooth, display, sensors, input и IPC
-остаются в plugin API, но помечены недоступными до появления их драйверов.
+Например, Yandex Mini сообщает `led.ring.rgb` и `led.ring.6` как доступные.
+`input` доступен, когда daemon обнаружил доступные `/dev/input/event*`
+устройства; package должен перечислить точные имена в `[input].devices`.
+`volume` доступен, если обнаружен ALSA mixer `Master` на card 0. Bluetooth
+status доступен через rfkill/BSA adapter. Power доступен только пока не
+работают процессы `quasar_launcher2` и `maind`; перед каждым изменением
+состояние проверяется повторно. Scan, pair/connect/disconnect/remove и
+discoverable остаются недоступными, пока нет безопасного API без перезапуска
+`bsa_server`. Audio, display, sensors, clock и IPC остаются в plugin API, но
+помечены недоступными до появления подтверждённой аппаратной реализации.
 
 ## Совместимость и сеть
 

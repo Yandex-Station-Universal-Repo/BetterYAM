@@ -73,15 +73,36 @@ impl Led {
     }
 
     pub async fn device_info(&self) -> Result<DeviceInfo> {
-        let features = vec![
+        let input_devices = crate::input::device_names().await?;
+        let input_available = !input_devices.is_empty();
+        let mut features = vec![
             "runtime.lua.v1".into(),
             "plugin.yap.v1".into(),
-            "arch.aarch64".into(),
+            format!("arch.{}", std::env::consts::ARCH),
             "led.ring.rgb".into(),
             format!("led.ring.{LED_COUNT}"),
             "led.pattern.v1".into(),
         ];
+        if input_available {
+            features.extend([
+                "input".into(),
+                "input.devices".into(),
+                "input.next_event".into(),
+            ]);
+        }
+        let volume_available = crate::volume::is_available().await;
+        if volume_available {
+            features.extend(["volume".into(), "volume.get".into(), "volume.set".into()]);
+        }
+        let bluetooth_capabilities = crate::bluetooth::availability().await?;
+        if bluetooth_capabilities.status {
+            features.extend(["bluetooth".into(), "bluetooth.status".into()]);
+        }
+        if bluetooth_capabilities.power {
+            features.push("bluetooth.power".into());
+        }
         let capabilities = HashMap::from([
+            (format!("arch.{}", std::env::consts::ARCH), true),
             ("led".into(), true),
             ("led.off".into(), true),
             ("led.ring".into(), true),
@@ -91,13 +112,19 @@ impl Led {
             ("clock".into(), false),
             ("clock.segments".into(), false),
             ("clock.time".into(), false),
-            ("volume".into(), false),
+            ("volume".into(), volume_available),
+            ("volume.get".into(), volume_available),
+            ("volume.set".into(), volume_available),
             ("audio".into(), false),
-            ("bluetooth".into(), false),
+            ("bluetooth".into(), bluetooth_capabilities.status),
+            ("bluetooth.status".into(), bluetooth_capabilities.status),
+            ("bluetooth.power".into(), bluetooth_capabilities.power),
             ("display".into(), false),
             ("sensors".into(), false),
             ("sensors.control".into(), false),
-            ("input".into(), false),
+            ("input".into(), input_available),
+            ("input.devices".into(), input_available),
+            ("input.next_event".into(), input_available),
             ("ipc.alarm".into(), false),
             ("ipc.speech".into(), false),
         ]);
@@ -111,12 +138,22 @@ impl Led {
         })
     }
 
-    pub async fn api_json(
-        &self,
-        method: Method,
-        path: &str,
-        _body: Option<Value>,
-    ) -> Result<Value> {
+    pub async fn api_json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        if method == Method::GET && path == "input/devices" {
+            return Ok(serde_json::to_value(crate::input::device_names().await?)?);
+        }
+        if method == Method::POST && path == "input/next-event" {
+            return crate::input::next_event(body).await;
+        }
+        if method == Method::GET && path == "volume" {
+            return Ok(serde_json::json!(crate::volume::get_percent().await?));
+        }
+        if method == Method::PUT && path == "volume" {
+            return crate::volume::set_percent(body).await;
+        }
+        if path.starts_with("bluetooth/") {
+            return crate::bluetooth::api_json(method, path, body).await;
+        }
         bail!(
             "Yandex Mini does not provide this operation yet: {} /{}",
             method,

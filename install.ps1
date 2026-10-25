@@ -38,7 +38,7 @@ function Select-StationSerial {
             if ($fields.Length -ge 2 -and $fields[1] -eq "device") {
                 $serial = $fields[0]
                 $arch = & adb -s $serial shell uname -m 2>$null
-                if ($arch -match "aarch64|arm64") {
+                if ($arch -match "aarch64|arm64|armv7l|armv7") {
                     $model = (& adb -s $serial shell uname -n 2>$null).Trim()
                     [PSCustomObject]@{ Serial = $serial; Model = $(if ($model) { $model } else { "unknown" }) }
                 }

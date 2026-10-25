@@ -57,7 +57,7 @@ command -v adb >/dev/null 2>&1 || {
 choose_device() {
   devices=$(adb devices </dev/null | awk 'NR > 1 && $2 == "device" {print $1}' | while IFS= read -r serial; do
     arch=$(adb -s "$serial" shell uname -m </dev/null 2>/dev/null | tr -d '\r') || continue
-    if [ "$arch" = aarch64 ] || [ "$arch" = arm64 ]; then
+    if [ "$arch" = aarch64 ] || [ "$arch" = arm64 ] || [ "$arch" = armv7l ] || [ "$arch" = armv7 ]; then
       model=$(adb -s "$serial" shell uname -n </dev/null 2>/dev/null | tr -d '\r')
       printf '%s\t%s\n' "$serial" "${model:-unknown}"
     fi

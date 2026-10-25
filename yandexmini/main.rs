@@ -1,10 +1,13 @@
 use anyhow::{anyhow, bail, Context, Result};
+mod bluetooth;
+mod input;
 mod led;
+mod volume;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use clap::Parser;
@@ -16,8 +19,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    ffi::CStr,
     fs,
     io::{Cursor, Read},
+    net::{Ipv4Addr, SocketAddr},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -33,8 +38,8 @@ use uuid::Uuid;
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "0.0.0.0:8099")]
-    listen: String,
+    #[arg(long, value_name = "IP:PORT")]
+    listen: Option<SocketAddr>,
     #[arg(long, default_value = "/opt/betteryam")]
     data_dir: PathBuf,
     #[arg(long)]
@@ -202,6 +207,19 @@ struct ClockRequest {
     segments: Option<HashMap<String, u8>>,
     #[serde(default)]
     off: bool,
+}
+#[derive(Debug, Deserialize)]
+struct VolumeRequest {
+    percent: u8,
+}
+#[derive(Debug, Deserialize)]
+struct BluetoothPowerRequest {
+    on: bool,
+}
+#[derive(Debug, Deserialize)]
+struct RuntimeInputRequest {
+    devices: Vec<String>,
+    timeout_ms: u64,
 }
 #[derive(Debug, Clone, Serialize)]
 struct PluginInfo {
@@ -738,6 +756,15 @@ fn input_scope(m: &Manifest) -> Result<&[String]> {
     }
     Ok(&m.input.devices)
 }
+fn validate_input_scope(requested: &[String], allowed: &[String]) -> Result<()> {
+    if requested.is_empty() {
+        bail!("input request must name at least one device")
+    }
+    if requested.iter().any(|name| !allowed.contains(name)) {
+        bail!("input request includes a device not declared by the package")
+    }
+    Ok(())
+}
 fn validate_id(s: &str) -> Result<()> {
     if s.is_empty()
         || !s
@@ -1183,13 +1210,26 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         if permissions.contains("input") {
             let input = lua.create_table()?;
             set_lua_availability(&lua, &input, &device, "input")?;
+            let input_devices_manifest = manifest.clone();
             let input_led = led.clone();
             input.set(
                 "devices",
                 lua.create_function(move |lua, ()| {
+                    let allowed: HashSet<_> = input_scope(&input_devices_manifest)
+                        .map_err(mlua::Error::external)?
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
                     let value = device_api_json(&input_led, Method::GET, "input/devices", None)
                         .map_err(mlua::Error::external)?;
-                    lua.to_value(&value)
+                    let names: Vec<String> =
+                        serde_json::from_value(value).map_err(mlua::Error::external)?;
+                    lua.to_value(
+                        &names
+                            .into_iter()
+                            .filter(|name| allowed.contains(name.as_str()))
+                            .collect::<Vec<_>>(),
+                    )
                 })?,
             )?;
             let input_manifest = manifest.clone();
@@ -1915,6 +1955,111 @@ async fn runtime_clock(
         .map_err(ApiError::backend)?;
     Ok(StatusCode::NO_CONTENT)
 }
+async fn runtime_volume_get(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<u8>, ApiError> {
+    runtime_permission(&a, &id, &headers, "volume").await?;
+    let value = a
+        .led
+        .api_json(Method::GET, "volume", None)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(serde_json::from_value(value)?))
+}
+async fn runtime_volume_set(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<VolumeRequest>,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "volume").await?;
+    a.led
+        .api_json(
+            Method::PUT,
+            "volume",
+            Some(serde_json::json!({"percent": request.percent})),
+        )
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn runtime_bluetooth_status(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "bluetooth").await?;
+    let value = a
+        .led
+        .api_json(Method::GET, "bluetooth/status", None)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(value))
+}
+async fn runtime_bluetooth_power(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<BluetoothPowerRequest>,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "bluetooth").await?;
+    a.led
+        .api_json(
+            Method::PUT,
+            "bluetooth/power",
+            Some(serde_json::json!({"on": request.on})),
+        )
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn runtime_input_devices(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<String>>, ApiError> {
+    runtime_permission(&a, &id, &headers, "input").await?;
+    let manifest = a.plugins.lock().await.manifest(&id)?;
+    let allowed = input_scope(&manifest)?;
+    let value = a
+        .led
+        .api_json(Method::GET, "input/devices", None)
+        .await
+        .map_err(ApiError::backend)?;
+    let names: Vec<String> = serde_json::from_value(value)?;
+    Ok(Json(
+        names
+            .into_iter()
+            .filter(|name| allowed.contains(name))
+            .collect(),
+    ))
+}
+async fn runtime_input_next_event(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<RuntimeInputRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "input").await?;
+    let manifest = a.plugins.lock().await.manifest(&id)?;
+    let allowed = input_scope(&manifest)?;
+    validate_input_scope(&request.devices, allowed).map_err(ApiError::new)?;
+    let value = a
+        .led
+        .api_json(
+            Method::POST,
+            "input/next-event",
+            Some(serde_json::json!({
+                "devices": request.devices,
+                "timeout_ms": request.timeout_ms
+            })),
+        )
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(value))
+}
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
 }
@@ -1991,6 +2136,50 @@ async fn led_off(State(a): State<App>) -> Result<StatusCode, ApiError> {
     a.led.off().await.map_err(ApiError::backend)?;
     Ok(StatusCode::NO_CONTENT)
 }
+async fn get_volume(State(a): State<App>) -> Result<Json<u8>, ApiError> {
+    let value = a
+        .led
+        .api_json(Method::GET, "volume", None)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(serde_json::from_value(value)?))
+}
+async fn put_volume(
+    State(a): State<App>,
+    Json(request): Json<VolumeRequest>,
+) -> Result<StatusCode, ApiError> {
+    a.led
+        .api_json(
+            Method::PUT,
+            "volume",
+            Some(serde_json::json!({"percent": request.percent})),
+        )
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn get_bluetooth_status(State(a): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
+    let value = a
+        .led
+        .api_json(Method::GET, "bluetooth/status", None)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(value))
+}
+async fn put_bluetooth_power(
+    State(a): State<App>,
+    Json(request): Json<BluetoothPowerRequest>,
+) -> Result<StatusCode, ApiError> {
+    a.led
+        .api_json(
+            Method::PUT,
+            "bluetooth/power",
+            Some(serde_json::json!({"on": request.on})),
+        )
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(StatusCode::NO_CONTENT)
+}
 #[derive(Debug)]
 struct ApiError {
     error: anyhow::Error,
@@ -2039,10 +2228,63 @@ fn runtime_api_url(listen: &str) -> Result<String> {
     }
     Ok(format!("http://{address}"))
 }
+
+fn lan_ipv4_priority(address: Ipv4Addr) -> Option<u8> {
+    if address.is_unspecified() || address.is_loopback() || address.is_multicast() {
+        return None;
+    }
+    if address.is_private() {
+        Some(0)
+    } else if address.is_link_local() {
+        Some(2)
+    } else {
+        Some(1)
+    }
+}
+
+fn discover_lan_ipv4() -> Result<Ipv4Addr> {
+    let mut interfaces = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut interfaces) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("enumerate network interfaces");
+    }
+
+    let mut candidates = Vec::new();
+    let mut interface = interfaces;
+    while !interface.is_null() {
+        let item = unsafe { &*interface };
+        if !item.ifa_addr.is_null()
+            && unsafe { (*item.ifa_addr).sa_family as i32 } == libc::AF_INET
+            && item.ifa_flags & libc::IFF_UP as u32 != 0
+            && item.ifa_flags & libc::IFF_LOOPBACK as u32 == 0
+        {
+            let sockaddr = unsafe { &*(item.ifa_addr as *const libc::sockaddr_in) };
+            let address = Ipv4Addr::from(u32::from_be(sockaddr.sin_addr.s_addr));
+            if let Some(priority) = lan_ipv4_priority(address) {
+                let name = unsafe { CStr::from_ptr(item.ifa_name) }
+                    .to_string_lossy()
+                    .into_owned();
+                candidates.push((priority, name, address));
+            }
+        }
+        interface = item.ifa_next;
+    }
+    unsafe { libc::freeifaddrs(interfaces) };
+
+    candidates.sort_unstable();
+    candidates
+        .first()
+        .map(|(_, _, address)| *address)
+        .context("no active LAN IPv4 address found; specify --listen IP:PORT")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
+    let listen = match args.listen {
+        Some(listen) => listen,
+        None => SocketAddr::new(discover_lan_ipv4()?.into(), 8099),
+    };
     fs::create_dir_all(&args.data_dir)?;
     let settings_path = args.data_dir.join("settings.toml");
     // A broken settings.toml must not silently fall back to defaults that
@@ -2072,7 +2314,7 @@ async fn main() -> Result<()> {
             args.data_dir.join("plugins"),
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
-        runtime_api_url: runtime_api_url(&args.listen)?,
+        runtime_api_url: runtime_api_url(&listen.to_string())?,
     };
     let services = {
         let device = app.device.lock().await.clone();
@@ -2120,12 +2362,32 @@ async fn main() -> Result<()> {
             .route("/api/runtime/:id/logo", post(runtime_logo))
             .route("/api/runtime/:id/logo/off", post(runtime_logo_off))
             .route("/api/runtime/:id/clock", post(runtime_clock))
+            .route(
+                "/api/runtime/:id/volume",
+                get(runtime_volume_get).put(runtime_volume_set),
+            )
+            .route(
+                "/api/runtime/:id/bluetooth/status",
+                get(runtime_bluetooth_status),
+            )
+            .route(
+                "/api/runtime/:id/bluetooth/power",
+                put(runtime_bluetooth_power),
+            )
+            .route("/api/runtime/:id/input/devices", get(runtime_input_devices))
+            .route(
+                "/api/runtime/:id/input/next-event",
+                post(runtime_input_next_event),
+            )
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
             .route("/api/sensors", get(get_sensors))
             .route("/api/clock", get(get_clock).put(put_clock))
             .route("/api/led", post(led_set))
             .route("/api/led/off", post(led_off))
+            .route("/api/volume", get(get_volume).put(put_volume))
+            .route("/api/bluetooth/status", get(get_bluetooth_status))
+            .route("/api/bluetooth/power", put(put_bluetooth_power))
             .route("/api/logo", post(logo_set))
             .route("/api/logo/off", post(logo_off));
     }
@@ -2133,8 +2395,8 @@ async fn main() -> Result<()> {
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(app);
-    let l = TcpListener::bind(&args.listen).await?;
-    tracing::info!("web UI: http://{}", args.listen);
+    let l = TcpListener::bind(listen).await?;
+    tracing::info!("web UI: http://{}", listen);
     axum::serve(l, router).await?;
     Ok(())
 }
@@ -2143,6 +2405,15 @@ const UI: &str = include_str!("web/index.html");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lan_address_selection_prefers_private_ipv4_addresses() {
+        assert_eq!(lan_ipv4_priority(Ipv4Addr::new(192, 168, 1, 20)), Some(0));
+        assert_eq!(lan_ipv4_priority(Ipv4Addr::new(8, 8, 8, 8)), Some(1));
+        assert_eq!(lan_ipv4_priority(Ipv4Addr::new(169, 254, 1, 2)), Some(2));
+        assert_eq!(lan_ipv4_priority(Ipv4Addr::LOCALHOST), None);
+        assert_eq!(lan_ipv4_priority(Ipv4Addr::UNSPECIFIED), None);
+    }
 
     #[test]
     fn network_policy_blocks_loopback() {
@@ -2161,6 +2432,14 @@ mod tests {
         .unwrap();
         assert!(validate_input_policy(&manifest).is_ok());
         assert_eq!(input_scope(&manifest).unwrap(), &["mute"]);
+    }
+
+    #[test]
+    fn binary_input_requests_cannot_escape_declared_device_scope() {
+        let allowed = vec!["adc_keypad".to_string()];
+        assert!(validate_input_scope(&allowed, &allowed).is_ok());
+        assert!(validate_input_scope(&["other".into()], &allowed).is_err());
+        assert!(validate_input_scope(&[], &allowed).is_err());
     }
 
     #[test]
