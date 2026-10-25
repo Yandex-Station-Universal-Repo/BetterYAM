@@ -101,6 +101,18 @@ impl Led {
         if bluetooth_capabilities.power {
             features.push("bluetooth.power".into());
         }
+        // Wi-Fi through the station's wpa_supplicant (wpa_cli); the setup
+        // access point ("wifi.ap") is decided by the daemon: it also needs
+        // a hostapd
+        let wifi_available = crate::wifi::available();
+        if wifi_available {
+            features.extend([
+                "wifi".into(),
+                "wifi.status".into(),
+                "wifi.scan".into(),
+                "wifi.networks".into(),
+            ]);
+        }
         let capabilities = HashMap::from([
             (format!("arch.{}", std::env::consts::ARCH), true),
             ("led".into(), true),
@@ -127,6 +139,10 @@ impl Led {
             ("input.next_event".into(), input_available),
             ("ipc.alarm".into(), false),
             ("ipc.speech".into(), false),
+            ("wifi".into(), wifi_available),
+            ("wifi.status".into(), wifi_available),
+            ("wifi.scan".into(), wifi_available),
+            ("wifi.networks".into(), wifi_available),
         ]);
         Ok(DeviceInfo {
             id: "yandexmini".into(),

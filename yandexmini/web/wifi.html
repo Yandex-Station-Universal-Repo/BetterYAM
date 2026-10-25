@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BetterYAM - Wi-Fi</title>
+  <style>
+    body { max-width: 900px; margin: 3rem auto; padding: 0 1rem; font: 16px system-ui; background: #10131a; color: #e8edf7; }
+    button, input, select { padding: .55rem; margin: .2rem; }
+    section { padding: 1rem; margin: 1rem 0; background: #1b2230; border-radius: 8px; }
+    .network { display: flex; gap: .5rem; align-items: center; border-top: 1px solid #344; padding: .6rem 0; }
+    .network span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    small { color: #aab; }
+    .note { color: #aab; }
+    .warn { color: #fbbc05; }
+    form { display: flex; flex-wrap: wrap; align-items: center; }
+    form input { flex: 1 1 12rem; }
+  </style>
+</head>
+<body>
+  <h1>BetterYAM</h1>
+  <section>
+    <h2>Wi-Fi</h2>
+    <p id="state" class="note">Загрузка…</p>
+    <p id="notice"></p>
+    <div id="networks"></div>
+  </section>
+  <section>
+    <h2>Подключить</h2>
+    <form id="connect">
+      <input id="ssid" placeholder="Имя сети" autocomplete="off" required maxlength="32">
+      <input id="password" type="password" placeholder="Пароль (пусто — открытая)" autocomplete="off" maxlength="63">
+      <button>Подключить</button>
+    </form>
+    <small>Пароль превращается в ключ на колонке и в открытом виде не хранится.</small>
+  </section>
+<script>
+const stateElement = document.getElementById('state');
+const noticeElement = document.getElementById('notice');
+const networksElement = document.getElementById('networks');
+const connectForm = document.getElementById('connect');
+const ssidInput = document.getElementById('ssid');
+const passwordInput = document.getElementById('password');
+// saved while on the station's own network: the phone is about to lose it
+let leaving = null;
+async function request(path, options) {
+  const response = await fetch('/api' + path, options);
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
+  return response;
+}
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+function signal(dbm) {
+  return dbm >= -55 ? 'отличный сигнал' : dbm >= -67 ? 'хороший сигнал' : dbm >= -75 ? 'слабый сигнал' : 'очень слабый сигнал';
+}
+function pick(ssid) { ssidInput.value = ssid; passwordInput.value = ''; passwordInput.focus(); }
+function networkRow(n) {
+  const band = n.freq >= 5000 ? '5 ГГц' : '2,4 ГГц';
+  const extra = `${signal(n.signal_dbm)}, ${band}${n.secure ? '' : ', открытая'}`;
+  return `<div class="network"><span><b>${escapeHtml(n.ssid)}</b><br><small>${escapeHtml(extra)}</small></span><button onclick="pick(decodeURIComponent('${encodeURIComponent(n.ssid)}'))">Выбрать</button></div>`;
+}
+async function load() {
+  let wifi;
+  try { wifi = await request('/wifi').then(r => r.json()); } catch (error) {
+    // after saving, silence is expected: the phone has lost the station
+    if (!leaving) stateElement.textContent = `Колонка не отвечает: ${error.message}`;
+    return;
+  }
+  const setup = wifi.setup || {};
+  // the message stays until the phone is back on the station's network
+  // after the try (the network saved is no longer waiting)
+  if (leaving && (setup.phase !== 'ap' || setup.pending)) return;
+  leaving = null;
+  {
+    stateElement.textContent = setup.phase === 'ap'
+      ? `Колонка без сети, вы подключены к её собственной${setup.ap_ssid ? ` «${setup.ap_ssid}»` : ''}. Выберите сеть, к которой ей подключиться.`
+      : wifi.current ? `Подключена к «${wifi.current.ssid}», ${wifi.current.ip}` : 'Не подключена';
+    noticeElement.className = setup.failed ? 'warn' : 'note';
+    noticeElement.textContent = setup.failed
+      ? 'К сохранённой сети подключиться не вышло: за минуту колонка не получила в ней адрес. Проверьте пароль и подключите снова.'
+      : setup.error ? `Последняя ошибка: ${setup.error}` : '';
+    networksElement.innerHTML = (wifi.around || []).map(networkRow).join('') || '<small>Сетей вокруг не видно — имя можно ввести ниже.</small>';
+  }
+}
+connectForm.onsubmit = async event => {
+  event.preventDefault();
+  const ssid = ssidInput.value.trim(), password = passwordInput.value;
+  if (password && password.length < 8) return alert('Пароль — от 8 символов (пусто — открытая сеть)');
+  try {
+    const answer = await request('/wifi/networks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ssid, password }) }).then(r => r.json());
+    passwordInput.value = '';
+    if (answer.leaving) {
+      leaving = ssid;
+      stateElement.textContent = `Колонка переходит на сеть «${ssid}».`;
+      noticeElement.className = 'note';
+      noticeElement.textContent = 'Телефон сейчас отключится от сети колонки. Подключите его к той же сети. Если колонка не подключится за минуту, её собственная сеть появится снова, и здесь будет видно, что не так.';
+      networksElement.innerHTML = '';
+    } else {
+      await load();
+    }
+  } catch (error) { alert(error.message); }
+};
+load();
+setInterval(load, 4000);
+</script>
+</body>
+</html>

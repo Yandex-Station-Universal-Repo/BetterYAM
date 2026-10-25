@@ -12,6 +12,9 @@
     .plugin span { flex: 1; }
     small { color: #aab; }
     #upload-status { color: #aab; }
+    .network { display: flex; gap: .5rem; align-items: center; border-top: 1px solid #344; padding: .6rem 0; }
+    .network span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .warn { color: #fbbc05; }
   </style>
 </head>
 <body>
@@ -21,7 +24,19 @@
     <h2>Пакеты</h2>
     <form id="upload"><input id="package-file" type="file" name="package" accept=".yap" required><button>Установить .yap</button><small id="upload-status"></small></form>
     <div id="plugins"></div>
-  </section> detected device model
+  </section>
+  <section id="wifi-section" hidden>
+    <h2>Wi-Fi</h2>
+    <p id="wifi-state"><small>Загрузка…</small></p>
+    <div id="wifi-networks"></div>
+    <form id="wifi-connect">
+      <input id="wifi-ssid" placeholder="Имя сети" autocomplete="off" required maxlength="32">
+      <input id="wifi-password" type="password" placeholder="Пароль (пусто — открытая)" autocomplete="off" maxlength="63">
+      <button>Подключить</button>
+      <button type="button" onclick="wifiScan()">Найти сети</button>
+    </form>
+    <p id="wifi-setup"></p>
+  </section>
   <section>
     <h2>LED</h2>
     <input id="colors" value="#4285F4,#EA4335,#FBBC05" size="40">
@@ -91,7 +106,65 @@ async function saveSettings() {
     await load();
   } catch (error) { alert(error.message); }
 }
+const wifiSection = document.getElementById('wifi-section');
+const wifiState = document.getElementById('wifi-state');
+const wifiNetworks = document.getElementById('wifi-networks');
+const wifiConnect = document.getElementById('wifi-connect');
+const wifiSsid = document.getElementById('wifi-ssid');
+const wifiPassword = document.getElementById('wifi-password');
+const wifiSetup = document.getElementById('wifi-setup');
+function wifiSignal(dbm) {
+  return dbm >= -55 ? 'отличный сигнал' : dbm >= -67 ? 'хороший сигнал' : dbm >= -75 ? 'слабый сигнал' : 'очень слабый сигнал';
+}
+function wifiRow(n, current) {
+  const name = encodeURIComponent(n.ssid);
+  const info = `${wifiSignal(n.signal_dbm)}, ${n.freq >= 5000 ? '5 ГГц' : '2,4 ГГц'}${n.secure ? '' : ', открытая'}${n.saved ? ', сохранена' : ''}`;
+  const buttons = n.ssid === current ? '<small>подключена</small>'
+    : (n.saved ? `<button onclick="wifiForget(decodeURIComponent('${name}'))">Забыть</button>` : '')
+      + `<button onclick="wifiPick(decodeURIComponent('${name}'))">${n.saved ? 'Сменить пароль' : 'Выбрать'}</button>`;
+  return `<div class="network"><span><b>${escapeHtml(n.ssid)}</b><br><small>${escapeHtml(info)}</small></span>${buttons}</div>`;
+}
+function wifiPick(ssid) { wifiSsid.value = ssid; wifiPassword.value = ''; wifiPassword.focus(); }
+async function loadWifi() {
+  let wifi;
+  try { wifi = await request('/wifi').then(r => r.json()); } catch (error) { return; }
+  if (!wifi.available) return;
+  wifiSection.hidden = false;
+  const current = wifi.current ? wifi.current.ssid : null;
+  wifiState.innerHTML = current ? `Подключена к <b>${escapeHtml(current)}</b>, ${escapeHtml(wifi.current.ip)}` : 'Не подключена';
+  wifiNetworks.innerHTML = (wifi.around || []).map(n => wifiRow(n, current)).join('') || '<small>Сетей не видно — «Найти сети» или имя вручную.</small>';
+  const setup = wifi.setup || {};
+  if (setup.mode === 'off') {
+    wifiSetup.innerHTML = '<small>Своя сеть колонки для настройки с телефона выключена (<code>[wifi_setup] mode</code> в settings.toml).</small>';
+  } else if (!setup.ap_available) {
+    wifiSetup.innerHTML = '<small>Своя сеть колонки недоступна: на колонке нет hostapd.</small>';
+  } else {
+    const failed = setup.failed ? '<span class="warn">К сети, сохранённой на точке доступа, подключиться не вышло.</span><br>' : '';
+    const error = setup.error ? `<small>Последняя ошибка: ${escapeHtml(setup.error)}</small><br>` : '';
+    wifiSetup.innerHTML = `${failed}${error}<small>Без сети колонка поднимает свою — ${setup.mode === 'auto' ? 'сама через несколько минут' : 'по кнопке'}; к ней подключаются с телефона и выбирают сеть.</small> <button onclick="wifiSetupStart()">Поднять свою сеть сейчас</button>`;
+  }
+}
+async function wifiScan() { try { await request('/wifi/scan', { method: 'POST' }); setTimeout(loadWifi, 4000); } catch (error) { alert(error.message); } }
+async function wifiForget(ssid) {
+  if (!confirm(`Забыть сеть «${ssid}»?`)) return;
+  try { await request(`/wifi/networks/${encodeURIComponent(ssid)}`, { method: 'DELETE' }); await loadWifi(); } catch (error) { alert(error.message); }
+}
+async function wifiSetupStart() {
+  if (!confirm('Колонка отключится от текущей сети и поднимет свою. Эта страница перестанет открываться, пока колонка не вернётся. Продолжить?')) return;
+  try { await request('/wifi/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: true }) }); } catch (error) { alert(error.message); }
+}
+wifiConnect.onsubmit = async event => {
+  event.preventDefault();
+  const ssid = wifiSsid.value.trim(), password = wifiPassword.value;
+  if (password && password.length < 8) return alert('Пароль — от 8 символов (пусто — открытая сеть)');
+  try {
+    await request('/wifi/networks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ssid, password }) });
+    wifiPassword.value = '';
+    await loadWifi();
+  } catch (error) { alert(error.message); }
+};
 load();
+loadWifi();
 </script>
 </body>
 </html>
