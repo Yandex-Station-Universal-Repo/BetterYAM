@@ -210,15 +210,13 @@ mod tests {
 
     #[test]
     fn abs_distance_ioctl_has_linux_read_request_shape() {
-        assert_eq!(abs_distance_request() >> 30, 2);
-        assert_eq!((abs_distance_request() >> 8) & 0xff, b'E' as IoctlRequest);
+        let request = abs_distance_request() as u32;
+        assert_eq!(request >> 30, 2);
+        assert_eq!((request >> 8) & 0xff, b'E' as u32);
+        assert_eq!(request & 0xff, 0x40 + ABS_DISTANCE);
         assert_eq!(
-            abs_distance_request() & 0xff,
-            (0x40 + ABS_DISTANCE) as IoctlRequest
-        );
-        assert_eq!(
-            (abs_distance_request() >> 16) & 0x3fff,
-            std::mem::size_of::<InputAbsInfo>() as IoctlRequest
+            (request >> 16) & 0x3fff,
+            std::mem::size_of::<InputAbsInfo>() as u32
         );
     }
 
