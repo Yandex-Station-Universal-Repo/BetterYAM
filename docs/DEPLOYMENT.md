@@ -50,9 +50,11 @@ CLI обращается к `http://<колонка>:8099`; адрес можн�
 `sh tools/build-daemons.sh manifest.json dist yandexmini`. Релизные daemon
 бинарники автоматически собираются с удалёнными symbol/debug данными. Скрипт
 создаёт `dist/manifest.json`, assets в `dist/assets/` и `dist/SHA256SUMS`.
-Для полного GitHub Release добавьте CLI assets, которые собираются отдельно,
-и обновите общий `SHA256SUMS`. Неизвестная модель не сопоставляется с похожим
-устройством: установка завершается с ошибкой.
+`tools/publish-all.sh` собирает daemon-ы локальным Rust toolchain на текущем
+компьютере, без Docker. Для cross-build должны быть установлены Rust target и
+подходящий linker для каждой архитектуры из manifest. Скрипту публикации также
+нужны `gh` с авторизованной GitHub-сессией и доступ к сети. Неизвестная модель
+не сопоставляется с похожим устройством: установка завершается с ошибкой.
 
 ## YAM API и capability profile
 
