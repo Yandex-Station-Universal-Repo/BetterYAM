@@ -2,10 +2,15 @@ name: check
 
 # The checks AGENTS.md asks for, on every push and pull request: formatting,
 # the whole workspace compiling (the device daemons included), the tests, and
-# the shell scripts' syntax.
+# the shell scripts' syntax. On musl, as the stations run it (the hardware
+# code is written against musl's libc types, e.g. ioctl's request).
 on:
   push:
   pull_request:
+
+env:
+  TARGET: x86_64-unknown-linux-musl
+  CC_x86_64_unknown_linux_musl: musl-gcc
 
 jobs:
   check:
@@ -15,13 +20,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+          targets: x86_64-unknown-linux-musl
+      - name: musl C compiler (vendored Lua)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
       - name: Check
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --target $TARGET
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --target $TARGET
       - name: Shell scripts
         run: |
           sh -n install.sh
