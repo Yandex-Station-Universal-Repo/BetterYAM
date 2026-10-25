@@ -9,7 +9,7 @@ const DEFAULT_REGISTRY_INDEX: &str =
     "https://raw.githubusercontent.com/nyakokitsu/yapkg/registry/index.json";
 
 #[derive(Parser)]
-#[command(name = "yam", about = "YAM package manager")]
+#[command(name = "yam", about = "BetterYAM package manager")]
 struct Cli {
     #[arg(long, env = "YAM_URL", default_value = "http://127.0.0.1:8099")]
     url: String,
@@ -301,8 +301,8 @@ fn open_tui(client: &Client, url: &str, id: &str, args: &[String]) -> Result<()>
     let root = package["directory"]
         .as_str()
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("/data/quazar/yam/data/plugins/{id}"));
-    // Mirrors `launch_program` / `binary_library_path` in yamd.
+        .unwrap_or_else(|| format!("/data/quazar/betteryam/data/plugins/{id}"));
+    // Mirrors `launch_program` / `binary_library_path` in BetterYAMd.
     let interpreter = launch["interpreter"].as_str();
     let explicit_libraries = launch["library_paths"]
         .as_array()
@@ -378,7 +378,7 @@ fn adb_station() -> Result<String> {
         .collect::<Vec<_>>();
     match devices.as_slice() {
         [serial] => Ok(serial.clone()),
-        [] => bail!("no ADB device; connect the Yandex Station with adb first"),
+        [] => bail!("no ADB device; connect the station with adb first"),
         _ => bail!("multiple ADB devices; set ADB_SERIAL and retry"),
     }
 }
@@ -409,9 +409,9 @@ fn install_registry_package(
     let message = daemon_response.text()?;
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
     {
-        bail!("yamd does not support registry downloads; update the daemon with the YAM installer")
+        bail!("BetterYAMd does not support registry downloads; update it with the BetterYAM installer")
     }
-    bail!("yamd registry download failed ({status}): {message}")
+    bail!("BetterYAMd registry download failed ({status}): {message}")
 }
 
 fn registry_packages(client: &Client, registry: &str) -> Result<Value> {

@@ -185,6 +185,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "betteryam"
+version = "0.1.14"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "clap",
+ "flate2",
+ "libc",
+ "mlua",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tokio",
+ "toml",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2361,33 +2388,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
 dependencies = [
  "lzma-sys",
-]
-
-[[package]]
-name = "yam"
-version = "0.1.14"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "clap",
- "flate2",
- "libc",
- "mlua",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tokio",
- "toml",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "walkdir",
- "zip",
 ]
 
 [[package]]

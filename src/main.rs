@@ -35,7 +35,7 @@ use uuid::Uuid;
 struct Args {
     #[arg(long, default_value = "0.0.0.0:8099")]
     listen: String,
-    #[arg(long, default_value = "/opt/yam")]
+    #[arg(long, default_value = "/opt/betteryam")]
     data_dir: PathBuf,
     #[arg(long)]
     model: Option<String>,
@@ -56,26 +56,6 @@ struct Settings {
     web: WebSettings,
     #[serde(default)]
     allow_plugin_binaries: bool,
-    #[serde(default)]
-    updates: UpdateSettings,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UpdateSettings {
-    #[serde(default = "default_true")]
-    enabled: bool,
-    #[serde(default = "default_update_interval")]
-    interval_minutes: u64,
-}
-fn default_update_interval() -> u64 {
-    360
-}
-impl Default for UpdateSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            interval_minutes: default_update_interval(),
-        }
-    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WebSettings {
@@ -101,7 +81,6 @@ impl Default for Settings {
             led: LedSettings::default(),
             web: WebSettings::default(),
             allow_plugin_binaries: false,
-            updates: UpdateSettings::default(),
         }
     }
 }
@@ -196,6 +175,8 @@ struct DeviceProfile {
     architecture: String,
     led_count: usize,
     features: Vec<String>,
+    #[serde(default)]
+    capabilities: HashMap<String, bool>,
     source: String,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -514,12 +495,22 @@ fn compatibility_error(m: &Manifest, d: &DeviceProfile) -> Option<String> {
 }
 fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if let Ok(raw) = fs::read_to_string(root.join("device.toml")) {
-        if let Ok(p) = toml::from_str::<DeviceProfile>(&raw) {
+        if let Ok(mut p) = toml::from_str::<DeviceProfile>(&raw) {
+            populate_capabilities(&mut p);
             return p;
         }
     }
     let arch = std::env::consts::ARCH.to_string();
-    let model = forced.unwrap_or_else(|| "unknown".into());
+    let model = forced.unwrap_or_else(|| {
+        Command::new("uname")
+            .arg("-n")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| "unknown".into())
+    });
     let mut features = vec!["runtime.lua.v1".into(), "plugin.yap.v1".into()];
     if arch.starts_with("arm") {
         features.push("arch.armhf".into())
@@ -527,14 +518,17 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if arch == "aarch64" {
         features.push("arch.aarch64".into())
     }
-    DeviceProfile {
+    let mut profile = DeviceProfile {
         id: device_identifier(&model),
         model,
         architecture: arch,
         led_count: 0,
         features,
+        capabilities: HashMap::new(),
         source: "runtime (device capabilities supplied by standard Device API)".into(),
-    }
+    };
+    populate_capabilities(&mut profile);
+    profile
 }
 fn apply_device_info(device: &mut DeviceProfile, info: DeviceInfo) {
     if !info.id.is_empty() {
@@ -548,12 +542,90 @@ fn apply_device_info(device: &mut DeviceProfile, info: DeviceInfo) {
     }
     device.led_count = info.led_count;
     device.features = info.features;
+    device.capabilities = info.capabilities;
+    populate_capabilities(device);
     for feature in ["runtime.lua.v1", "plugin.yap.v1"] {
         if !device.features.iter().any(|present| present == feature) {
             device.features.push(feature.into());
         }
     }
     device.source = "standard device API".into();
+}
+fn populate_capabilities(device: &mut DeviceProfile) {
+    for feature in &device.features {
+        device.capabilities.entry(feature.clone()).or_insert(true);
+    }
+    for capability in [
+        "led",
+        "led.off",
+        "led.ring",
+        "led.ring.rgb",
+        "led.ring.segments",
+        "led.pattern",
+        "volume",
+        "volume.get",
+        "volume.set",
+        "audio",
+        "audio.play",
+        "bluetooth",
+        "bluetooth.status",
+        "bluetooth.power",
+        "bluetooth.scan",
+        "bluetooth.pair",
+        "bluetooth.connect",
+        "bluetooth.disconnect",
+        "bluetooth.remove",
+        "display",
+        "display.backlights",
+        "display.backlight",
+        "sensors",
+        "sensors.list",
+        "sensors.read",
+        "sensors.control",
+        "sensors.ambient_light.configure",
+        "clock",
+        "clock.available",
+        "clock.off",
+        "clock.time",
+        "clock.segments",
+        "input",
+        "input.devices",
+        "input.next_event",
+        "ipc.alarm",
+        "ipc.speech",
+    ] {
+        device
+            .capabilities
+            .entry(capability.into())
+            .or_insert_with(|| {
+                device.features.iter().any(|feature| {
+                    feature == capability || feature.starts_with(&format!("{capability}."))
+                })
+            });
+    }
+}
+fn capability_available(device: &DeviceProfile, capability: &str) -> bool {
+    device
+        .capabilities
+        .get(capability)
+        .copied()
+        .unwrap_or_else(|| {
+            device.features.iter().any(|feature| {
+                feature == capability || feature.starts_with(&format!("{capability}."))
+            })
+        })
+}
+fn set_lua_availability(
+    lua: &Lua,
+    table: &mlua::Table,
+    device: &DeviceProfile,
+    capability: &str,
+) -> mlua::Result<()> {
+    let available = capability_available(device, capability);
+    table.set(
+        "is_available",
+        lua.create_function(move |_, ()| Ok(available))?,
+    )
 }
 /// Replaces `path` via a synced sibling file so a power cut never leaves it truncated.
 fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
@@ -764,34 +836,47 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 Ok(())
             })?,
         )?;
-        let logo = lua.create_table()?;
-        let logo_led = led.clone();
-        let logo_cancelled = cancelled.clone();
-        logo.set(
-            "set",
-            lua.create_function(move |_, colors: mlua::Table| {
-                if logo_cancelled.load(Ordering::Relaxed) {
-                    return Err(mlua::Error::external("plugin stopped"));
-                }
-                let colors = colors
-                    .sequence_values::<String>()
-                    .collect::<mlua::Result<Vec<_>>>()?;
-                tokio::runtime::Handle::current()
-                    .block_on(logo_led.draw(colors))
-                    .map_err(mlua::Error::external)
-            })?,
-        )?;
-        let logo_led = led.clone();
-        logo.set(
-            "off",
-            lua.create_function(move |_, ()| {
-                tokio::runtime::Handle::current()
-                    .block_on(logo_led.off())
-                    .map_err(mlua::Error::external)
-            })?,
-        )?;
-        api.set("logo", logo)?;
         if permissions.contains("led") {
+            let logo = lua.create_table()?;
+            set_lua_availability(&lua, &logo, &device, "led.ring.rgb")?;
+            let logo_led = led.clone();
+            let logo_cancelled = cancelled.clone();
+            logo.set(
+                "set",
+                lua.create_function(move |_, colors: mlua::Table| {
+                    if logo_cancelled.load(Ordering::Relaxed) {
+                        return Err(mlua::Error::external("plugin stopped"));
+                    }
+                    let colors = colors
+                        .sequence_values::<String>()
+                        .collect::<mlua::Result<Vec<_>>>()?;
+                    tokio::runtime::Handle::current()
+                        .block_on(logo_led.draw(colors))
+                        .map_err(mlua::Error::external)
+                })?,
+            )?;
+            let logo_led = led.clone();
+            logo.set(
+                "off",
+                lua.create_function(move |_, ()| {
+                    tokio::runtime::Handle::current()
+                        .block_on(logo_led.off())
+                        .map_err(mlua::Error::external)
+                })?,
+            )?;
+            api.set("logo", logo)?;
+            let led_api = lua.create_table()?;
+            set_lua_availability(&lua, &led_api, &device, "led")?;
+            let ring = lua.create_table()?;
+            set_lua_availability(&lua, &ring, &device, "led.ring")?;
+            let rgb = lua.create_table()?;
+            set_lua_availability(&lua, &rgb, &device, "led.ring.rgb")?;
+            ring.set("rgb", rgb)?;
+            let segments = lua.create_table()?;
+            set_lua_availability(&lua, &segments, &device, "led.ring.segments")?;
+            ring.set("segments", segments)?;
+            led_api.set("ring", ring)?;
+            api.set("led", led_api)?;
             let led2 = led.clone();
             let cancelled_set = cancelled.clone();
             api.set(
@@ -832,6 +917,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("volume") {
             let volume = lua.create_table()?;
+            set_lua_availability(&lua, &volume, &device, "volume")?;
             let volume_led = led.clone();
             volume.set(
                 "set",
@@ -860,6 +946,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("audio") {
             let audio = lua.create_table()?;
+            set_lua_availability(&lua, &audio, &device, "audio")?;
             let audio_root = root.clone();
             let audio_led = led.clone();
             audio.set(
@@ -884,6 +971,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("bluetooth") {
             let bt = lua.create_table()?;
+            set_lua_availability(&lua, &bt, &device, "bluetooth")?;
             let bluetooth_led = led.clone();
             bt.set(
                 "status",
@@ -941,6 +1029,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("display") {
             let display = lua.create_table()?;
+            set_lua_availability(&lua, &display, &device, "display")?;
             let display_led = led.clone();
             display.set(
                 "backlights",
@@ -970,6 +1059,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("sensors") {
             let sensors = lua.create_table()?;
+            set_lua_availability(&lua, &sensors, &device, "sensors")?;
             let sensors_led = led.clone();
             sensors.set(
                 "list",
@@ -990,6 +1080,9 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 })?,
             )?;
             if permissions.contains("sensors.control") {
+                let control = lua.create_table()?;
+                set_lua_availability(&lua, &control, &device, "sensors.control")?;
+                sensors.set("control", control)?;
                 let sensors_led = led.clone();
                 sensors.set(
                     "configure_ambient_light",
@@ -1023,6 +1116,31 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("clock") {
             let clock = lua.create_table()?;
+            set_lua_availability(&lua, &clock, &device, "clock")?;
+            let segments = lua.create_table()?;
+            set_lua_availability(&lua, &segments, &device, "clock.segments")?;
+            let segment_call = lua.create_table()?;
+            let segment_led = led.clone();
+            segment_call.set(
+                "__call",
+                lua.create_function(move |_, (_segments, levels): (mlua::Table, mlua::Table)| {
+                    let mut frame = HashMap::new();
+                    for pair in levels.pairs::<String, u8>() {
+                        let (segment, value) = pair?;
+                        frame.insert(segment, value);
+                    }
+                    device_api_json(
+                        &segment_led,
+                        Method::PUT,
+                        "clock",
+                        Some(serde_json::json!({"segments": frame})),
+                    )
+                    .map(|_| ())
+                    .map_err(mlua::Error::external)
+                })?,
+            )?;
+            segments.set_metatable(Some(segment_call));
+            clock.set("segments", segments)?;
             let clock_led = led.clone();
             clock.set(
                 "available",
@@ -1034,31 +1152,12 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                     Ok(info.available)
                 })?,
             )?;
-            let clock_led = led.clone();
-            clock.set(
-                "segments",
-                lua.create_function(move |_, levels: mlua::Table| {
-                    let mut frame = HashMap::new();
-                    for pair in levels.pairs::<String, u8>() {
-                        let (segment, value) = pair?;
-                        frame.insert(segment, value);
-                    }
-                    device_api_json(
-                        &clock_led,
-                        Method::PUT,
-                        "clock",
-                        Some(serde_json::json!({"segments": frame})),
-                    )
-                    .map(|_| ())
-                    .map_err(mlua::Error::external)
-                })?,
-            )?;
-            let clock_led = led.clone();
+            let time_led = led.clone();
             clock.set(
                 "time",
                 lua.create_function(move |_, (time, brightness): (String, Option<u8>)| {
                     device_api_json(
-                        &clock_led,
+                        &time_led,
                         Method::PUT,
                         "clock",
                         Some(serde_json::json!({
@@ -1070,12 +1169,12 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                     .map_err(mlua::Error::external)
                 })?,
             )?;
-            let clock_led = led.clone();
+            let off_led = led.clone();
             clock.set(
                 "off",
                 lua.create_function(move |_, ()| {
                     device_api_json(
-                        &clock_led,
+                        &off_led,
                         Method::PUT,
                         "clock",
                         Some(serde_json::json!({"off": true})),
@@ -1088,6 +1187,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         }
         if permissions.contains("input") {
             let input = lua.create_table()?;
+            set_lua_availability(&lua, &input, &device, "input")?;
             let input_led = led.clone();
             input.set(
                 "devices",
@@ -1183,6 +1283,9 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         if permissions.contains("ipc.alarm") || permissions.contains("ipc.speech") {
             let ipc = lua.create_table()?;
             if permissions.contains("ipc.alarm") {
+                let alarm = lua.create_table()?;
+                set_lua_availability(&lua, &alarm, &device, "ipc.alarm")?;
+                ipc.set("alarm", alarm)?;
                 let ipc_led = led.clone();
                 ipc.set(
                     "next_alarm",
@@ -1208,6 +1311,9 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 )?;
             }
             if permissions.contains("ipc.speech") {
+                let speech = lua.create_table()?;
+                set_lua_availability(&lua, &speech, &device, "ipc.speech")?;
+                ipc.set("speech", speech)?;
                 let ipc_led = led.clone();
                 ipc.set(
                     "next_speech",
@@ -1290,6 +1396,11 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
             lua_features.set(i + 1, feature.as_str())?;
         }
         lua_device.set("features", lua_features)?;
+        let lua_capabilities = lua.create_table()?;
+        for (capability, available) in &device.capabilities {
+            lua_capabilities.set(capability.as_str(), *available)?;
+        }
+        lua_device.set("capabilities", lua_capabilities)?;
         globals.set("device", lua_device)?;
         let launch_path = manifest.launch.path(&manifest).to_string();
         let source = fs::read_to_string(root.join(&launch_path))?;
@@ -1898,6 +2009,8 @@ async fn put_settings(
                 || feature.starts_with("plugin.")
                 || feature.starts_with("arch.")
         });
+        device.capabilities.clear();
+        populate_capabilities(&mut device);
         device.source = "device API not configured".into();
     }
     Ok(StatusCode::NO_CONTENT)
@@ -1945,73 +2058,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn shell_quote(value: &std::ffi::OsStr) -> String {
-    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
-}
-
-fn stage_release_update(executable: &Path, data_dir: &Path, listen: &str) -> Result<bool> {
-    const RELEASES: &str = "https://github.com/nyakokitsu/yam/releases/latest/download";
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let sums = client
-        .get(format!("{RELEASES}/SHA256SUMS"))
-        .header("User-Agent", "yam-auto-updater")
-        .send()?
-        .error_for_status()?
-        .text()?;
-    let expected = sums
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            match (fields.next(), fields.next()) {
-                (Some(hash), Some("yamd-aarch64-linux-musl")) => Some(hash),
-                _ => None,
-            }
-        })
-        .context("release SHA256SUMS has no yamd checksum")?;
-    if format!(
-        "{:x}",
-        Sha256::digest(fs::read(executable).unwrap_or_default())
-    ) == expected
-    {
-        return Ok(false);
-    }
-    let binary = client
-        .get(format!("{RELEASES}/yamd-aarch64-linux-musl"))
-        .header("User-Agent", "yam-auto-updater")
-        .send()?
-        .error_for_status()?
-        .bytes()?
-        .to_vec();
-    if format!("{:x}", Sha256::digest(&binary)) != expected {
-        bail!("release checksum mismatch")
-    }
-    let staged = executable.with_extension("yam-update");
-    fs::write(&staged, binary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
-    }
-    let helper = data_dir.join(".yam-restart-update.sh");
-    fs::write(
-        &helper,
-        format!(
-            "#!/bin/sh\nsleep 1\nmv {} {}\nexec {} --listen {} --data-dir {}\n",
-            shell_quote(staged.as_os_str()),
-            shell_quote(executable.as_os_str()),
-            shell_quote(executable.as_os_str()),
-            shell_quote(std::ffi::OsStr::new(listen)),
-            shell_quote(data_dir.as_os_str()),
-        ),
-    )?;
-    Command::new("sh").arg(helper).spawn()?;
-    Ok(true)
-}
-
-/// Binary packages reach the daemon on loopback unless it listens on one address only.
+/// Binary packages reach BetterYAMd on loopback unless it listens on one address only.
 fn runtime_api_url(listen: &str) -> Result<String> {
     let mut address: std::net::SocketAddr = listen
         .parse()
@@ -2024,42 +2071,14 @@ fn runtime_api_url(listen: &str) -> Result<String> {
     }
     Ok(format!("http://{address}"))
 }
-fn start_auto_updater(app: App, executable: PathBuf, listen: String) {
-    task::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        loop {
-            if app.settings.lock().await.updates.enabled {
-                let executable = executable.clone();
-                let data_dir = app.root.clone();
-                let listen = listen.clone();
-                match task::spawn_blocking(move || {
-                    stage_release_update(&executable, &data_dir, &listen)
-                })
-                .await
-                {
-                    Ok(Ok(true)) => {
-                        tracing::info!("release update staged; restarting yamd");
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        std::process::exit(0);
-                    }
-                    Ok(Ok(false)) => {}
-                    Ok(Err(error)) => tracing::warn!(%error, "automatic update check failed"),
-                    Err(error) => tracing::warn!(%error, "automatic update task failed"),
-                }
-            }
-            let interval = app.settings.lock().await.updates.interval_minutes;
-            tokio::time::sleep(Duration::from_secs(interval.clamp(5, 24 * 60) * 60)).await;
-        }
-    });
-}
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
     fs::create_dir_all(&args.data_dir)?;
     let settings_path = args.data_dir.join("settings.toml");
-    // A broken settings.toml must not silently fall back to defaults: they
-    // re-enable the web API and auto-updates.
+    // A broken settings.toml must not silently fall back to defaults that
+    // re-enable the web API.
     let settings: Settings = match fs::read_to_string(&settings_path) {
         Ok(raw) => {
             toml::from_str(&raw).with_context(|| format!("invalid {}", settings_path.display()))?
@@ -2086,11 +2105,13 @@ async fn main() -> Result<()> {
                     || feature.starts_with("plugin.")
                     || feature.starts_with("arch.")
             });
+            device.capabilities.clear();
+            populate_capabilities(&mut device);
             device.source = "device API unavailable".into();
             tracing::warn!(%error, "device API unavailable; hardware capabilities are not advertised");
         }
     }
-    tracing::info!(model=%device.model,features=?device.features,"detected device");
+    tracing::info!(model=%device.model,features=?device.features,capabilities=?device.capabilities,"detected device");
     let app = App {
         root: args.data_dir.clone(),
         settings: Arc::new(Mutex::new(settings)),
@@ -2102,7 +2123,6 @@ async fn main() -> Result<()> {
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: runtime_api_url(&args.listen)?,
     };
-    start_auto_updater(app.clone(), std::env::current_exe()?, args.listen.clone());
     let services = {
         let device = app.device.lock().await.clone();
         app.plugins
@@ -2203,6 +2223,7 @@ mod tests {
                 architecture: "aarch64".into(),
                 led_count: 12,
                 features: vec!["led.ring.rgb".into(), "led.ring.12".into()],
+                capabilities: HashMap::new(),
             },
         );
         assert_eq!(device.id, "other-device");
@@ -2216,5 +2237,60 @@ mod tests {
                 "plugin.yap.v1"
             ]
         );
+        assert_eq!(device.capabilities.get("led.ring.rgb"), Some(&true));
+        assert_eq!(device.capabilities.get("clock.segments"), Some(&false));
+    }
+
+    #[test]
+    fn explicit_capability_false_overrides_matching_feature() {
+        let mut device = DeviceProfile {
+            features: vec!["clock.segments".into()],
+            capabilities: HashMap::from([("clock.segments".into(), false)]),
+            ..DeviceProfile::default()
+        };
+        assert!(!capability_available(&device, "clock.segments"));
+        device.capabilities.remove("clock.segments");
+        assert!(capability_available(&device, "clock.segments"));
+    }
+
+    #[test]
+    fn lua_is_available_returns_the_profile_boolean() {
+        let lua = Lua::new();
+        let device = DeviceProfile {
+            capabilities: HashMap::from([("clock.segments".into(), false)]),
+            ..DeviceProfile::default()
+        };
+        let segments = lua.create_table().unwrap();
+        set_lua_availability(&lua, &segments, &device, "clock.segments").unwrap();
+        let metatable = lua.create_table().unwrap();
+        metatable
+            .set(
+                "__call",
+                lua.create_function(|_, (_segments, levels): (mlua::Table, mlua::Table)| {
+                    Ok(levels.pairs::<String, u8>().count())
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        segments.set_metatable(Some(metatable));
+        lua.globals().set("segments", segments).unwrap();
+        let (available, segment_count) = lua
+            .load("return segments.is_available(), segments({left=1,right=2})")
+            .eval::<(bool, usize)>()
+            .unwrap();
+        assert!(!available);
+        assert_eq!(segment_count, 2);
+    }
+
+    #[test]
+    fn device_profile_reports_boolean_capabilities() {
+        let mut profile = DeviceProfile {
+            features: vec!["led.ring.rgb".into()],
+            ..DeviceProfile::default()
+        };
+        populate_capabilities(&mut profile);
+        let value = serde_json::to_value(profile).unwrap();
+        assert_eq!(value["capabilities"]["led.ring.rgb"], true);
+        assert_eq!(value["capabilities"]["clock.segments"], false);
     }
 }

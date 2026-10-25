@@ -11,7 +11,7 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 | `display` | `alice.display.backlights()`, `set_backlight()` |
 | `sensors` | `alice.sensors.list()`, `read(id)` |
 | `sensors.control` | `alice.sensors.configure_ambient_light()` |
-| `clock` | `alice.clock.available()`, `time()`, `segments()`, `off()` |
+| `clock` | `alice.clock.available()`, `is_available()`, `time()`, `segments()`, `off()` |
 | `input` | `alice.input.devices()`, `next_event(timeout_ms)` |
 | `network` | `alice.http.get(url)`, `post(url, body)` |
 | `ipc.alarm` | `alice.ipc.next_alarm(timeout_ms)` |
@@ -21,11 +21,29 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 
 `alice.sleep(ms)` доступен всем пакетам и нужен в циклах для отмены запуска.
 
-`device` также содержит `id`, `model`, `architecture`, `led_count` и `features`;
-эти сведения и hardware capabilities поступают от стандартного Device API
-daemon’а. `alice.logo.set(colors)` и `alice.logo.off()` — совместимые aliases
-основных LED-функций. `alice.set` использует фактический `device.led_count`;
-проверку конкретного frame выполняет daemon.
+Для аппаратных API доступны boolean-проверки без выполнения операции:
+`alice.led.is_available()`, `alice.led.ring.is_available()`,
+`alice.led.ring.rgb.is_available()`, а также
+`alice.volume.is_available()`, `alice.audio.is_available()`,
+`alice.bluetooth.is_available()`, `alice.display.is_available()`,
+`alice.sensors.is_available()`, `alice.clock.is_available()`,
+`alice.input.is_available()`, `alice.sensors.control.is_available()`,
+`alice.ipc.alarm.is_available()` и `alice.ipc.speech.is_available()`.
+Для отдельных возможностей используйте `device.capabilities`, например
+`device.capabilities["clock.segments"]` или
+`device.capabilities["led.ring.12"]`. Capability keys включают API-группы и
+отдельные операции, например `volume.set`, `bluetooth.scan`,
+`display.backlight`, `sensors.ambient_light.configure`, `clock.time`,
+`clock.segments` и `input.next_event`. Значение отсутствующей capability —
+`false`. API сегментов часов остаётся вызываемым как раньше:
+`alice.clock.segments({...})`; у него также есть
+`alice.clock.segments.is_available()`.
+
+`device` содержит `id`, `model`, `architecture`, `led_count`, `features` и
+boolean-словарь `capabilities`, полученные от реализации Device API для текущей
+модели. `features` сохраняет совместимость с `plugin.toml`. `alice.logo.set`
+и `alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
+использует `device.led_count`; проверку frame выполняет BetterYAMd.
 
 ## Совместимость и сеть
 

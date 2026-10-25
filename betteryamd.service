@@ -1,12 +1,12 @@
 [Unit]
-Description=YAM package daemon
+Description=BetterYAM device daemon
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/opt/yam/bin/yamd --data-dir /opt/yam/data
+ExecStart=/opt/betteryam/bin/betteryamd --data-dir /opt/betteryam/data
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

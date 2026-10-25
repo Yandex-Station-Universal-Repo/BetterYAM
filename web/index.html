@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>YAM</title>
+  <title>BetterYAM</title>
   <style>
     body { max-width: 900px; margin: 3rem auto; font: 16px system-ui; background: #10131a; color: #e8edf7; }
     button, input, select { padding: .55rem; margin: .2rem; }
@@ -15,7 +15,7 @@
   </style>
 </head>
 <body>
-  <h1>YAM</h1>
+  <h1>BetterYAM</h1>
   <p id="device"></p>
   <section>
     <h2>Пакеты</h2>
@@ -32,7 +32,6 @@
     <h2>Настройки</h2>
     <label>Device API base URL <input id="http-base-url" type="url" size="36" placeholder="http://device-daemon:port/"></label>
     <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
-    <label><input id="updates" type="checkbox"> Автообновление YAM из GitHub Releases</label>
     <button onclick="saveSettings()">Сохранить</button>
   </section>
 <script>
@@ -44,7 +43,6 @@ const packageFile = document.getElementById('package-file');
 const uploadStatus = document.getElementById('upload-status');
 const httpBaseUrlInput = document.getElementById('http-base-url');
 const binariesInput = document.getElementById('binaries');
-const updatesInput = document.getElementById('updates');
 const colorsInput = document.getElementById('colors');
 let deviceLedCount = 0;
 async function request(path, options) {
@@ -66,13 +64,13 @@ function pluginRow(plugin) {
 async function load() {
   try {
     const [pluginData, settings, currentDevice] = await Promise.all([request('/plugins').then(r => r.json()), request('/settings').then(r => r.json()), request('/device').then(r => r.json())]);
-    deviceElement.textContent = `Колонка: ${currentDevice.model} · ${currentDevice.architecture} · ${currentDevice.features.join(', ')}`;
+    const capabilities = Object.entries(currentDevice.capabilities || {}).map(([name, available]) => `${name}=${available}`);
+    deviceElement.textContent = `Колонка: ${currentDevice.model} · ${currentDevice.architecture} · ${capabilities.join(', ')}`;
     deviceLedCount = currentDevice.led_count || 0;
     pluginsElement.innerHTML = pluginData.map(pluginRow).join('') || 'Пакетов нет';
     const http = settings.led.http || {};
     httpBaseUrlInput.value = http.base_url || '';
     binariesInput.checked = settings.allow_plugin_binaries;
-    updatesInput.checked = settings.updates?.enabled !== false;
   } catch (error) { alert(error.message); }
 }
 async function action(id, name) {
@@ -95,7 +93,6 @@ async function saveSettings() {
     settings.led.backend = 'http';
     settings.led.http = httpBaseUrlInput.value ? { base_url: httpBaseUrlInput.value } : null;
     settings.allow_plugin_binaries = binariesInput.checked;
-    settings.updates = { ...(settings.updates || {}), enabled: updatesInput.checked };
     await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) });
     await load();
   } catch (error) { alert(error.message); }

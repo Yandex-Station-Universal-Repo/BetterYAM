@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = "nyakokitsu/yam"
+$repo = "Yandex-Station-Universal-Repo/BetterYAM"
 $headers = @{ "User-Agent" = "YAM-installer"; "Accept" = "application/vnd.github+json" }
 
 if ($Version -eq "latest") {
@@ -39,21 +39,21 @@ function Select-StationSerial {
                 $serial = $fields[0]
                 $arch = & adb -s $serial shell uname -m 2>$null
                 if ($arch -match "aarch64|arm64") {
-                    $model = (& adb -s $serial shell getprop ro.product.model 2>$null).Trim()
-                    [PSCustomObject]@{ Serial = $serial; Model = $(if ($model) { $model } else { "Yandex Station" }) }
+                    $model = (& adb -s $serial shell uname -n 2>$null).Trim()
+                    [PSCustomObject]@{ Serial = $serial; Model = $(if ($model) { $model } else { "unknown" }) }
                 }
             }
         })
     if ($devices.Count -eq 0) { return $null }
     if ($devices.Count -eq 1) { return $devices[0].Serial }
-    Write-Host "Select Yandex Station:"
+    Write-Host "Select station:"
     for ($i = 0; $i -lt $devices.Count; $i++) {
         Write-Host ("  {0}) {1} ({2})" -f ($i + 1), $devices[$i].Model, $devices[$i].Serial)
     }
     $selection = Read-Host "Number"
     $number = 0
     if (-not [int]::TryParse($selection, [ref]$number) -or $number -lt 1 -or $number -gt $devices.Count) {
-        throw "Invalid Yandex Station selection"
+        throw "Invalid station selection"
     }
     return $devices[$number - 1].Serial
 }
@@ -70,7 +70,7 @@ function Find-StationIp {
             if ($address -match "\binet\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
         }
     }
-    return Read-Host "Yandex Station IP address"
+    return Read-Host "Station IP address"
 }
 
 function Get-ReleaseAsset([string]$Name) {
@@ -83,7 +83,7 @@ try {
     New-Item -ItemType Directory -Force -Path $tmp, $binDir | Out-Null
     $checksums = Get-ReleaseAsset "SHA256SUMS"
     $downloads = @{}
-    foreach ($name in @("yam-x86_64-pc-windows-msvc.exe", "yamd-aarch64-linux-musl")) {
+    foreach ($name in @("yam-x86_64-pc-windows-msvc.exe")) {
         $download = Get-ReleaseAsset $name
         $expected = ((Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($name) + "$") }) -split "\s+")[0]
         if (-not $expected) { throw "No SHA-256 checksum for $name" }
@@ -94,20 +94,33 @@ try {
     Copy-Item -Force $downloads["yam-x86_64-pc-windows-msvc.exe"] $yamBinary
 
     $stationIp = Find-StationIp
-    if (-not $stationIp) { throw "Yandex Station IP address is required" }
+    if (-not $stationIp) { throw "Station IP address is required" }
     $adb = Get-Command adb -ErrorAction SilentlyContinue
-    if (-not $adb) { throw "adb is required to deploy yamd to the Yandex Station" }
+    if (-not $adb) { throw "adb is required to deploy BetterYAMd to the station" }
     $serial = $script:yamStationSerial
     if (-not $serial) {
         & adb connect "$stationIp`:5555" | Out-Host
         $serial = "$stationIp`:5555"
         & adb -s $serial get-state | Out-Null
     }
-    $devicePrefix = "/data/quazar/yam"
-    $yamdBinary = $downloads["yamd-aarch64-linux-musl"]
+    $stationModel = (& adb -s $serial shell uname -n 2>$null).Trim()
+    if (-not $stationModel) { throw "Could not determine station model using uname -n" }
+    $modelId = ($stationModel.ToLowerInvariant() -replace '[^a-z0-9_-]', '-' -replace '-+', '-').Trim('-')
+    if (-not $modelId) { throw "Station model did not produce a valid daemon ID" }
+    $daemonAsset = "betteryamd-$modelId-aarch64-linux"
+    try {
+        $daemonBinary = Get-ReleaseAsset $daemonAsset
+    } catch {
+        throw "No BetterYAMd release asset for model '$stationModel' ($daemonAsset)"
+    }
+    $expected = ((Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($daemonAsset) + "$") }) -split "\s+")[0]
+    if (-not $expected) { throw "No SHA-256 checksum for $daemonAsset" }
+    $actual = (Get-FileHash -Algorithm SHA256 $daemonBinary).Hash.ToLowerInvariant()
+    if ($actual -ne $expected.ToLowerInvariant()) { throw "Checksum mismatch for $daemonAsset" }
+    $devicePrefix = "/data/quazar/betteryam"
     & adb -s $serial shell "mkdir -p $devicePrefix/bin $devicePrefix/data" | Out-Null
-    & adb -s $serial push $yamdBinary "$devicePrefix/bin/yamd.new" | Out-Null
-    $startCommand = 'chmod 0755 /data/quazar/yam/bin/yamd.new; if [ -f /data/quazar/yam/yamd.pid ] && kill -0 $(cat /data/quazar/yam/yamd.pid) 2>/dev/null; then kill $(cat /data/quazar/yam/yamd.pid); fi; mv /data/quazar/yam/bin/yamd.new /data/quazar/yam/bin/yamd; start-stop-daemon --start --background --make-pidfile --pidfile /data/quazar/yam/yamd.pid --startas /data/quazar/yam/bin/yamd -- --data-dir /data/quazar/yam/data'
+    & adb -s $serial push $daemonBinary "$devicePrefix/bin/betteryamd.new" | Out-Null
+    $startCommand = 'chmod 0755 /data/quazar/betteryam/bin/betteryamd.new; if [ -f /data/quazar/betteryam/betteryamd.pid ] && kill -0 $(cat /data/quazar/betteryam/betteryamd.pid) 2>/dev/null; then kill $(cat /data/quazar/betteryam/betteryamd.pid); fi; mv /data/quazar/betteryam/bin/betteryamd.new /data/quazar/betteryam/bin/betteryamd; start-stop-daemon --start --background --make-pidfile --pidfile /data/quazar/betteryam/betteryamd.pid --startas /data/quazar/betteryam/bin/betteryamd -- --data-dir /data/quazar/betteryam/data'
     & adb -s $serial shell $startCommand | Out-Null
 
     $yamUrl = "http://$stationIp`:8099"
@@ -124,7 +137,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
         [Environment]::SetEnvironmentVariable("Path", (($userPath, $binDir | Where-Object { $_ }) -join ";"), "User")
     }
     $env:Path = "$binDir;$env:Path"
-    Write-Host "YAM $tag installed in $Prefix and deployed to $stationIp"
+    Write-Host "BetterYAM $tag installed in $Prefix and BetterYAMd for $stationModel deployed to $stationIp"
     Write-Host "Use yam list or yam --url $yamUrl list"
 } finally {
     if (Test-Path $tmp) { Remove-Item -Force -Recurse $tmp }

@@ -68,6 +68,8 @@ pub struct DeviceInfo {
     pub architecture: String,
     pub led_count: usize,
     pub features: Vec<String>,
+    #[serde(default)]
+    pub capabilities: std::collections::HashMap<String, bool>,
 }
 
 #[async_trait]

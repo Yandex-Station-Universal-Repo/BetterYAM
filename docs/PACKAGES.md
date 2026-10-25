@@ -18,7 +18,7 @@ path = "main.lua"
 features = ["led.ring.rgb"]
 ```
 
-`oneshot` запускается через `yam run`; включённый `service` восстанавливается после перезапуска daemon. Lua-сервисы должны регулярно вызывать `alice.sleep` или `alice.set`.
+`oneshot` запускается через `yam run`; включённый `service` восстанавливается после перезапуска BetterYAMd. Lua-сервисы должны регулярно вызывать `alice.sleep` или `alice.set`.
 
 Binary-пакет требует `exec`, должен соответствовать архитектуре колонки (обычно AArch64 musl) и может задать `args`, `interpreter = "sh"` и `library_paths`. Его вывод доступен через `yam logs <id>`.
 
@@ -33,4 +33,4 @@ yam stop nano
 yam rm nano
 ```
 
-Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета. Hardware операции маршрутизируются через стандартный Device API настроенного daemon’а.
+Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета. Hardware операции маршрутизируются через Device API текущей модели BetterYAMd.

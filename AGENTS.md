@@ -2,12 +2,12 @@
 
 ## Repository layout
 
-- `src/main.rs` builds `yamd`, the HTTP daemon, package manager, Lua bridge and hardware adapters.
+- `src/main.rs` builds `betteryamd`, the HTTP API, package manager and Lua bridge.
 - `src/bin/yam.rs` builds `yam`, the command-line client.
 - `web/index.html` is embedded in the binary with `include_str!`.
 - `examples/` contains source trees for `.yap` packages.
 - `docs/` is the public developer documentation.
-- `install.sh` installs a prebuilt Linux binary.
+- `install.sh` installs the `yam` CLI and the model-specific `betteryamd` Linux release asset.
 - `tools/convert_apkg.py` converts an apkg repository package into `.yap`.
 
 ## Required checks
@@ -34,7 +34,7 @@ Do not commit `target/`, package archives, device data, credentials or logs.
 - Advertise a feature in `DeviceProfile` only when its adapter is detectable and usable.
 - Keep path handling safe: package paths are relative and must reject parent components.
 - Long-running Lua packages must be cancellable through the shared cancellation token and should call `alice.sleep` or `alice.set` regularly.
-- Never assume a model-specific sysfs path for an unknown device. Use a profile or the `custom` LED template.
+- Never put model-specific hardware code in the shared runtime. Each model's `betteryamd` release must implement its hardware capabilities and report availability in the Device API profile.
 
 ## Package conventions
 
