@@ -1,8 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 mod bluetooth;
+mod captive;
 mod input;
 mod led;
 mod volume;
+mod wifi;
+mod wifi_setup;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
@@ -62,6 +65,9 @@ struct Settings {
     web: WebSettings,
     #[serde(default)]
     allow_plugin_binaries: bool,
+    /// Wi-Fi setup from a phone through the station's own access point
+    #[serde(default)]
+    wifi_setup: wifi_setup::WifiSetupSettings,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WebSettings {
@@ -87,6 +93,7 @@ impl Default for Settings {
             led: LedSettings::default(),
             web: WebSettings::default(),
             allow_plugin_binaries: false,
+            wifi_setup: wifi_setup::WifiSetupSettings::default(),
         }
     }
 }
@@ -217,6 +224,10 @@ struct BluetoothPowerRequest {
     on: bool,
 }
 #[derive(Debug, Deserialize)]
+struct WifiSetupRequest {
+    on: bool,
+}
+#[derive(Debug, Deserialize)]
 struct RuntimeInputRequest {
     devices: Vec<String>,
     timeout_ms: u64,
@@ -240,6 +251,7 @@ struct App {
     plugins: Arc<Mutex<PluginManager>>,
     runtime_tokens: Arc<Mutex<HashMap<String, String>>>,
     runtime_api_url: String,
+    wifi: Arc<wifi_setup::Setup>,
 }
 #[derive(Deserialize)]
 struct Invocation {
@@ -612,6 +624,11 @@ fn populate_capabilities(device: &mut DeviceProfile) {
         "input.next_event",
         "ipc.alarm",
         "ipc.speech",
+        "wifi",
+        "wifi.status",
+        "wifi.scan",
+        "wifi.networks",
+        "wifi.ap",
     ] {
         device
             .capabilities
@@ -2180,6 +2197,49 @@ async fn put_bluetooth_power(
         .map_err(ApiError::backend)?;
     Ok(StatusCode::NO_CONTENT)
 }
+// Wi-Fi: wpa_cli and the supervisor block (processes, the settings lock
+// taken from a plain thread), so they run off the async workers.
+async fn wifi_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T, ApiError> {
+    task::spawn_blocking(work)
+        .await
+        .map_err(|e| ApiError::backend(e.into()))?
+        .map_err(ApiError::backend)
+}
+async fn get_wifi(State(a): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
+    let wifi = a.wifi.clone();
+    Ok(Json(wifi_blocking(move || Ok(wifi.status())).await?))
+}
+async fn post_wifi_scan(State(a): State<App>) -> Result<StatusCode, ApiError> {
+    let wifi = a.wifi.clone();
+    wifi_blocking(move || wifi.scan()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn post_wifi_network(
+    State(a): State<App>,
+    Json(request): Json<wifi_setup::NetworkRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let wifi = a.wifi.clone();
+    let leaving = wifi_blocking(move || wifi.add(&request.ssid, &request.password)).await?;
+    Ok(Json(serde_json::json!({ "leaving": leaving })))
+}
+async fn delete_wifi_network(
+    State(a): State<App>,
+    AxumPath(ssid): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let wifi = a.wifi.clone();
+    wifi_blocking(move || wifi.forget(&ssid)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn post_wifi_setup(
+    State(a): State<App>,
+    Json(request): Json<WifiSetupRequest>,
+) -> Result<StatusCode, ApiError> {
+    let wifi = a.wifi.clone();
+    wifi_blocking(move || wifi.request(request.on)).await?;
+    Ok(StatusCode::ACCEPTED)
+}
 #[derive(Debug)]
 struct ApiError {
     error: anyhow::Error,
@@ -2230,7 +2290,12 @@ fn runtime_api_url(listen: &str) -> Result<String> {
 }
 
 fn lan_ipv4_priority(address: Ipv4Addr) -> Option<u8> {
-    if address.is_unspecified() || address.is_loopback() || address.is_multicast() {
+    // the setup access point's own address is not the LAN
+    if address.is_unspecified()
+        || address.is_loopback()
+        || address.is_multicast()
+        || address == wifi_setup::AP_IP
+    {
         return None;
     }
     if address.is_private() {
@@ -2277,14 +2342,27 @@ fn discover_lan_ipv4() -> Result<Ipv4Addr> {
         .context("no active LAN IPv4 address found; specify --listen IP:PORT")
 }
 
+/// The LAN address to serve on, waited for: a station that starts without a
+/// network gets one later (the Wi-Fi setup access point is how, if enabled).
+async fn wait_for_lan_ipv4() -> Ipv4Addr {
+    let mut said = false;
+    loop {
+        match discover_lan_ipv4() {
+            Ok(address) => return address,
+            Err(error) if !said => {
+                tracing::warn!(%error, "waiting for a LAN address");
+                said = true;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
-    let listen = match args.listen {
-        Some(listen) => listen,
-        None => SocketAddr::new(discover_lan_ipv4()?.into(), 8099),
-    };
     fs::create_dir_all(&args.data_dir)?;
     let settings_path = args.data_dir.join("settings.toml");
     // A broken settings.toml must not silently fall back to defaults that
@@ -2298,16 +2376,33 @@ async fn main() -> Result<()> {
             return Err(error).with_context(|| format!("read {}", settings_path.display()))
         }
     };
+    let settings = Arc::new(Mutex::new(settings));
+    // the Wi-Fi setup runs whatever the network does: without one it is
+    // the way to get one
+    let wifi = wifi_setup::Setup::new(args.data_dir.clone(), settings.clone());
+    wifi.start(tokio::runtime::Handle::current());
+    let listen = match args.listen {
+        Some(listen) => listen,
+        None => SocketAddr::new(wait_for_lan_ipv4().await.into(), 8099),
+    };
     let led = Arc::new(Led::new()?);
     let mut device = detect_device(&args.data_dir, args.model);
     if device.id.is_empty() {
         device.id = device_identifier(&device.model);
     }
     apply_device_info(&mut device, led.device_info().await?);
+    let ap = {
+        let wifi = wifi.clone();
+        task::spawn_blocking(move || wifi.ap_available()).await?
+    };
+    device.capabilities.insert("wifi.ap".into(), ap);
+    if ap && !device.features.iter().any(|f| f == "wifi.ap") {
+        device.features.push("wifi.ap".into());
+    }
     tracing::info!(model=%device.model,features=?device.features,capabilities=?device.capabilities,"detected device");
     let app = App {
         root: args.data_dir.clone(),
-        settings: Arc::new(Mutex::new(settings)),
+        settings,
         device: Arc::new(Mutex::new(device)),
         led,
         plugins: Arc::new(Mutex::new(PluginManager::new(
@@ -2315,6 +2410,7 @@ async fn main() -> Result<()> {
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: runtime_api_url(&listen.to_string())?,
+        wifi,
     };
     let services = {
         let device = app.device.lock().await.clone();
@@ -2388,6 +2484,11 @@ async fn main() -> Result<()> {
             .route("/api/volume", get(get_volume).put(put_volume))
             .route("/api/bluetooth/status", get(get_bluetooth_status))
             .route("/api/bluetooth/power", put(put_bluetooth_power))
+            .route("/api/wifi", get(get_wifi))
+            .route("/api/wifi/scan", post(post_wifi_scan))
+            .route("/api/wifi/networks", post(post_wifi_network))
+            .route("/api/wifi/networks/:ssid", delete(delete_wifi_network))
+            .route("/api/wifi/setup", post(post_wifi_setup))
             .route("/api/logo", post(logo_set))
             .route("/api/logo/off", post(logo_off));
     }

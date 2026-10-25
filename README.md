@@ -17,6 +17,9 @@ events when the corresponding kernel devices are accessible, and ALSA Master
 volume when the mixer control is available. Bluetooth status and power are
 read from rfkill/BSA state; power uses the station control script and is
 disabled while `quasar_launcher2` or `maind` is running. Unverified Bluetooth
-operations remain unavailable. Other
+operations remain unavailable. Wi-Fi networks are listed, added and
+forgotten through the station's own wpa_supplicant (`wpa_cli`); an
+experimental setup access point lets a phone pick the Wi-Fi when the station
+has none (see [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)). Other
 documented YAM APIs remain present and report unavailable until implemented
 for this device.
