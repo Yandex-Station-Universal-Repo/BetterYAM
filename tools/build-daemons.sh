@@ -61,12 +61,14 @@ for entry in manifest["devices"]:
     ]
     if os.environ.get("BUILD_WITH_DOCKER") == "1":
         image_target = target.replace("-unknown-linux-", "-")
+        docker_manifest = Path("/home/rust/src") / cargo_manifest.relative_to(root)
         command = [
             "docker", "run", "--rm",
             "-v", f"{root}:/home/rust/src",
             "-w", "/home/rust/src",
             f"messense/rust-musl-cross:{image_target}",
-            *cargo_command,
+            "cargo", "build", "--release", "--target", target,
+            "--manifest-path", str(docker_manifest), "--bin", binary,
         ]
     else:
         command = cargo_command
