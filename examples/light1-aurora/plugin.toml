@@ -1,0 +1,13 @@
+id = "light1-aurora"
+name = "Light 1 Aurora"
+version = "1.0.0"
+entry = "main.lua"
+description = "A soft moving aurora for an RGB LED ring"
+permissions = ["led"]
+
+[launch]
+kind = "lua"
+mode = "oneshot"
+
+[compatibility]
+features = ["led.ring.rgb"]

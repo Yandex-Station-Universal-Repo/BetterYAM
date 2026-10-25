@@ -1,0 +1,14 @@
+id = "midi-demo"
+name = "Midi demo"
+version = "1.0.0"
+entry = "main.lua"
+description = "Rainbow lap on the ring, then 12:34 on the clock"
+permissions = ["led", "clock"]
+
+[launch]
+kind = "lua"
+mode = "oneshot"
+
+[compatibility]
+models = ["yandexmidi"]
+features = ["led.ring.rgb", "led.ring.24", "display.clock.segment.v1"]

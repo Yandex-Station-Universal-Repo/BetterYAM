@@ -1,0 +1,16 @@
+[Unit]
+Description=YAM package daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/yam/bin/yamd --data-dir /opt/yam/data
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

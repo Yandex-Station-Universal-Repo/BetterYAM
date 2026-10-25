@@ -1,0 +1,14 @@
+id = "rainbow"
+name = "Rainbow"
+version = "1.0.0"
+entry = "main.lua"
+description = "Simple six-pixel demonstration"
+permissions = ["led"]
+
+[launch]
+kind = "lua"
+mode = "oneshot"
+
+[compatibility]
+models = ["yandexmini_2"]
+features = ["led.ring.rgb", "led.ring.6"]
