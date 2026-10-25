@@ -73,7 +73,7 @@ enum Command {
         #[command(subcommand)]
         command: LedCommand,
     },
-    /// Yandex Station Midi logo LEDs (`yam logo set` takes 6 colors).
+    /// LED logo alias (`yam logo set` uses the configured LED count).
     Logo {
         #[command(subcommand)]
         command: LedCommand,

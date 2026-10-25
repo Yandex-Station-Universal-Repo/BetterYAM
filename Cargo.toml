@@ -13,6 +13,7 @@ path = "src/bin/yam.rs"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 axum = { version = "0.7", features = ["multipart"] }
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"

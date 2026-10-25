@@ -2368,6 +2368,7 @@ name = "yam"
 version = "0.1.14"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "flate2",

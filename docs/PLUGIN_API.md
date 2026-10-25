@@ -21,6 +21,12 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 
 `alice.sleep(ms)` доступен всем пакетам и нужен в циклах для отмены запуска.
 
+`device` также содержит `id`, `model`, `architecture`, `led_count` и `features`;
+эти сведения и hardware capabilities поступают от стандартного Device API
+daemon’а. `alice.logo.set(colors)` и `alice.logo.off()` — совместимые aliases
+основных LED-функций. `alice.set` использует фактический `device.led_count`;
+проверку конкретного frame выполняет daemon.
+
 ## Совместимость и сеть
 
 Указывайте нужные возможности, а не модель:
