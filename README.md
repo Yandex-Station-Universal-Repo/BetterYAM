@@ -184,6 +184,14 @@ Lua-плагины продолжают получать `alice`, `device` и `e
 минимальные permissions и указывайте требуемые hardware features в
 `[compatibility]`.
 
+После установки binary-пакет с permission `exec` становится shell-командой с
+именем своего package ID (например, `byam install nano` → `nano`). BetterYAM
+создаёт wrapper в `/data/quazar/betteryam/data/bin` и добавляет каталог в
+`PATH` интерактивной shell через `/etc/profile.d/betteryam.sh`; откройте новую
+ADB shell-сессию после установки. Если системный `PATH` уже содержит такую
+команду, системная команда имеет приоритет. Binary-пакеты запускаются с
+правами пользователя shell, поэтому устанавливайте только доверенные пакеты.
+
 Пример фрагмента манифеста:
 
 ```toml

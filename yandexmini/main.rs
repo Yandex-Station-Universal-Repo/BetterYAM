@@ -297,12 +297,19 @@ struct Invocation {
 }
 struct PluginManager {
     root: PathBuf,
+    commands_dir: PathBuf,
+    profile_file: PathBuf,
     enabled: HashSet<String>,
     running: HashMap<String, Arc<AtomicBool>>,
 }
 impl PluginManager {
     fn new(root: PathBuf) -> Result<Self> {
         fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let commands_dir = root
+            .parent()
+            .context("plugin directory has no data directory")?
+            .join("bin");
         let enabled = match fs::read_to_string(root.join("enabled.json")) {
             Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|error| {
                 tracing::warn!(%error, "enabled.json is corrupt; all packages start disabled");
@@ -310,11 +317,159 @@ impl PluginManager {
             }),
             Err(_) => HashSet::new(),
         };
-        Ok(Self {
+        let mut manager = Self {
             root,
+            commands_dir,
+            profile_file: PathBuf::from("/etc/profile.d/betteryam.sh"),
             enabled,
             running: HashMap::new(),
-        })
+        };
+        manager.sync_commands()?;
+        Ok(manager)
+    }
+    #[cfg(test)]
+    fn with_paths(root: PathBuf, commands_dir: PathBuf, profile_file: PathBuf) -> Result<Self> {
+        fs::create_dir_all(&root)?;
+        let mut manager = Self {
+            root: fs::canonicalize(root)?,
+            commands_dir,
+            profile_file,
+            enabled: HashSet::new(),
+            running: HashMap::new(),
+        };
+        manager.sync_commands()?;
+        Ok(manager)
+    }
+    fn sync_commands(&mut self) -> Result<()> {
+        fs::create_dir_all(&self.commands_dir)?;
+        let mut commands = HashSet::new();
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let manifest_path = entry.path().join("plugin.toml");
+            let raw = match fs::read_to_string(&manifest_path) {
+                Ok(raw) => raw,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!(path = %manifest_path.display(), %error, "cannot read package manifest while syncing shell commands");
+                    continue;
+                }
+            };
+            let manifest: Manifest = match toml::from_str(&raw) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    tracing::warn!(path = %manifest_path.display(), %error, "cannot parse package manifest while syncing shell commands");
+                    continue;
+                }
+            };
+            if manifest.launch.kind != LaunchKind::Binary
+                || !manifest
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "exec")
+            {
+                continue;
+            }
+            validate_id(&manifest.id)?;
+            let package_root = self.root.join(&manifest.id);
+            let executable = package_root.join(manifest.launch.path(&manifest));
+            if !executable.is_file() {
+                tracing::warn!(
+                    package = %manifest.id,
+                    path = %executable.display(),
+                    "binary package launch path is missing; shell command was not created"
+                );
+                continue;
+            }
+            let wrapper = self.commands_dir.join(&manifest.id);
+            match fs::symlink_metadata(&wrapper) {
+                Ok(metadata) => {
+                    let mut marker = vec![0; COMMAND_WRAPPER_MARKER.len()];
+                    let managed = metadata.file_type().is_file()
+                        && fs::File::open(&wrapper)
+                            .and_then(|mut file| file.read_exact(&mut marker))
+                            .is_ok()
+                        && marker == COMMAND_WRAPPER_MARKER.as_bytes();
+                    if !managed {
+                        bail!(
+                            "refusing to overwrite unmanaged shell command {}",
+                            wrapper.display()
+                        )
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            write_atomic(
+                &wrapper,
+                command_wrapper(&manifest, &package_root)?.as_bytes(),
+            )?;
+            set_executable(&wrapper)?;
+            commands.insert(manifest.id);
+        }
+
+        for entry in fs::read_dir(&self.commands_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let mut marker = vec![0; COMMAND_WRAPPER_MARKER.len()];
+            let managed = fs::File::open(&path)
+                .and_then(|mut file| file.read_exact(&mut marker))
+                .is_ok()
+                && marker == COMMAND_WRAPPER_MARKER.as_bytes();
+            if managed
+                && !commands.contains(
+                    &path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            {
+                fs::remove_file(path)?;
+            }
+        }
+
+        if commands.is_empty() {
+            match fs::read_to_string(&self.profile_file) {
+                Ok(contents) if contents.starts_with(PROFILE_MARKER) => {
+                    fs::remove_file(&self.profile_file)?;
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            let profile_dir = self
+                .profile_file
+                .parent()
+                .context("shell profile path has no parent directory")?;
+            fs::create_dir_all(profile_dir)?;
+            if self.profile_file.exists()
+                && !fs::read_to_string(&self.profile_file)?.starts_with(PROFILE_MARKER)
+            {
+                bail!(
+                    "refusing to overwrite unmanaged shell profile {}",
+                    self.profile_file.display()
+                )
+            }
+            let path = shell_quote(&self.commands_dir.to_string_lossy());
+            let profile = format!(
+                "{PROFILE_MARKER}\nBETTERYAM_COMMANDS_DIR={path}\n\
+                 case \":${{PATH-}}:\" in\n\
+                   *:\"$BETTERYAM_COMMANDS_DIR\":*) ;;\n\
+                   *) PATH=\"${{PATH:+$PATH:}}$BETTERYAM_COMMANDS_DIR\" ;;\n\
+                 esac\n\
+                 export PATH\n\
+                 unset BETTERYAM_COMMANDS_DIR\n"
+            );
+            write_atomic(&self.profile_file, profile.as_bytes())?;
+        }
+        Ok(())
     }
     fn save(&self) -> Result<()> {
         write_atomic(
@@ -360,7 +515,9 @@ impl PluginManager {
         if result.is_err() {
             let _ = fs::remove_dir_all(&stage);
         }
-        result
+        let manifest = result?;
+        self.sync_commands()?;
+        Ok(manifest)
     }
     fn install_staged(&self, bytes: &[u8], stage: &Path, budget: u64) -> Result<Manifest> {
         if bytes.starts_with(b"PK\x03\x04") {
@@ -423,8 +580,61 @@ impl PluginManager {
         }
         fs::remove_dir_all(p)?;
         self.enabled.remove(id);
-        self.save()
+        self.save()?;
+        self.sync_commands()
     }
+}
+
+const COMMAND_WRAPPER_MARKER: &str = "# Generated by BetterYAM; do not edit.\n";
+const PROFILE_MARKER: &str = "# Managed by BetterYAM; do not edit.\n";
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn set_executable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o755);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+fn command_wrapper(manifest: &Manifest, root: &Path) -> Result<String> {
+    let executable = manifest.launch.path(manifest);
+    safe_relative(executable)?;
+    let (interpreter, program) = launch_program(manifest, root, executable);
+    let libraries = binary_library_directories(manifest, root)
+        .iter()
+        .map(|directory| shell_quote(&directory.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(":");
+    let mut wrapper = String::from(COMMAND_WRAPPER_MARKER);
+    wrapper.push_str("set -eu\n");
+    wrapper.push_str(&format!("cd {}\n", shell_quote(&root.to_string_lossy())));
+    if !libraries.is_empty() {
+        wrapper.push_str(&format!(
+            "if [ -n \"${{LD_LIBRARY_PATH:-}}\" ]; then\n\
+               export LD_LIBRARY_PATH={libraries}:\"$LD_LIBRARY_PATH\"\n\
+             else\n\
+               export LD_LIBRARY_PATH={libraries}\n\
+             fi\n"
+        ));
+    }
+    wrapper.push_str("exec ");
+    if interpreter.is_some() {
+        wrapper.push_str("sh ");
+    }
+    wrapper.push_str(&shell_quote(&program.to_string_lossy()));
+    for argument in &manifest.launch.args {
+        wrapper.push(' ');
+        wrapper.push_str(&shell_quote(argument));
+    }
+    wrapper.push_str(" \"$@\"\n");
+    Ok(wrapper)
 }
 fn archive_path(path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty()
@@ -1782,7 +1992,17 @@ fn pump_log(
     })
 }
 fn binary_library_path(manifest: &Manifest, root: &Path) -> String {
-    let bundled: Vec<PathBuf> = if manifest.launch.library_paths.is_empty() {
+    let bundled = binary_library_directories(manifest, root);
+    let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    bundled
+        .iter()
+        .map(|directory| directory.display().to_string())
+        .chain((!existing.is_empty()).then_some(existing))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+fn binary_library_directories(manifest: &Manifest, root: &Path) -> Vec<PathBuf> {
+    if manifest.launch.library_paths.is_empty() {
         Path::new(manifest.launch.path(manifest))
             .parent()
             .and_then(Path::parent)
@@ -1797,14 +2017,7 @@ fn binary_library_path(manifest: &Manifest, root: &Path) -> String {
             .iter()
             .map(|directory| root.join(directory))
             .collect()
-    };
-    let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-    bundled
-        .iter()
-        .map(|directory| directory.display().to_string())
-        .chain((!existing.is_empty()).then_some(existing))
-        .collect::<Vec<_>>()
-        .join(":")
+    }
 }
 
 async fn run_package(
@@ -3015,5 +3228,118 @@ mod tests {
         let value = serde_json::to_value(profile).unwrap();
         assert_eq!(value["capabilities"]["led.ring.rgb"], true);
         assert_eq!(value["capabilities"]["clock.segments"], false);
+    }
+
+    #[test]
+    fn binary_packages_are_exposed_as_shell_commands_and_removed_cleanly() {
+        let temporary = std::env::temp_dir().join(format!("betteryam-path-{}", Uuid::new_v4()));
+        let plugins = temporary.join("plugins");
+        let package = plugins.join("nano");
+        fs::create_dir_all(package.join("nano/bin")).unwrap();
+        fs::create_dir_all(package.join("nano/lib")).unwrap();
+        fs::write(
+            package.join("nano/bin/nano"),
+            b"#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n",
+        )
+        .unwrap();
+        set_executable(&package.join("nano/bin/nano")).unwrap();
+        fs::write(
+            package.join("plugin.toml"),
+            r#"
+id = "nano"
+name = "Nano"
+version = "1.0.0"
+entry = "launch.lua"
+permissions = ["exec"]
+
+[launch]
+kind = "binary"
+path = "nano/bin/nano"
+args = ["--flag with space"]
+"#,
+        )
+        .unwrap();
+
+        let commands = temporary.join("bin");
+        let profile = temporary.join("profile.d/betteryam.sh");
+        let mut manager =
+            PluginManager::with_paths(plugins.clone(), commands.clone(), profile.clone()).unwrap();
+        let wrapper = fs::read_to_string(commands.join("nano")).unwrap();
+        assert!(wrapper.starts_with(COMMAND_WRAPPER_MARKER));
+        assert!(wrapper.contains("nano/bin/nano"));
+        assert!(wrapper.contains("'--flag with space' \"$@\""));
+        assert!(wrapper.contains("if [ -n \"${LD_LIBRARY_PATH:-}\" ]; then"));
+        assert!(fs::read_to_string(&profile)
+            .unwrap()
+            .contains(&commands.display().to_string()));
+
+        let output = std::process::Command::new(commands.join("nano"))
+            .arg("user arg")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "<--flag with space>\n<user arg>\n"
+        );
+
+        let path_output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                ". \"$1\" && case \":$PATH:\" in *:\"$2\":*) printf included;; *) exit 1;; esac",
+                "sh",
+            ])
+            .arg(&profile)
+            .arg(&commands)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        assert!(path_output.status.success());
+        assert_eq!(String::from_utf8(path_output.stdout).unwrap(), "included");
+
+        manager.remove("nano").unwrap();
+        assert!(!commands.join("nano").exists());
+        assert!(!profile.exists());
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn binary_command_sync_does_not_replace_unmanaged_commands() {
+        let temporary =
+            std::env::temp_dir().join(format!("betteryam-path-collision-{}", Uuid::new_v4()));
+        let plugins = temporary.join("plugins");
+        let package = plugins.join("nano");
+        fs::create_dir_all(package.join("nano/bin")).unwrap();
+        fs::write(package.join("nano/bin/nano"), b"binary").unwrap();
+        fs::write(
+            package.join("plugin.toml"),
+            r#"
+id = "nano"
+name = "Nano"
+version = "1.0.0"
+entry = "launch.lua"
+permissions = ["exec"]
+
+[launch]
+kind = "binary"
+path = "nano/bin/nano"
+"#,
+        )
+        .unwrap();
+        let commands = temporary.join("bin");
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(commands.join("nano"), "user-owned command").unwrap();
+
+        let result = PluginManager::with_paths(
+            plugins,
+            commands.clone(),
+            temporary.join("profile.d/betteryam.sh"),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(commands.join("nano")).unwrap(),
+            "user-owned command"
+        );
+        fs::remove_dir_all(temporary).unwrap();
     }
 }
