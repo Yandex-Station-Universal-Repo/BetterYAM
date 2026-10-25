@@ -10,6 +10,10 @@ BIN_DIR=${2:-${YAM_BIN_DIR:-$HOME/.local/bin}}
 REPOSITORY=https://github.com/Yandex-Station-Universal-Repo/BetterYAM
 DEVICE_PREFIX=/data/quazar/betteryam
 
+strip_device_id() {
+  printf '%s' "$1" | LC_ALL=C sed 's/[-_][A-Z0-9]\{4\}$//'
+}
+
 if [ "$ACTION" = install ]; then
   case "$(uname -s):$(uname -m)" in
     Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
@@ -59,6 +63,7 @@ choose_device() {
     arch=$(adb -s "$serial" shell uname -m </dev/null 2>/dev/null | tr -d '\r') || continue
     if [ "$arch" = aarch64 ] || [ "$arch" = arm64 ] || [ "$arch" = armv7l ] || [ "$arch" = armv7 ]; then
       model=$(adb -s "$serial" shell uname -n </dev/null 2>/dev/null | tr -d '\r')
+      model=$(strip_device_id "$model")
       printf '%s\t%s\n' "$serial" "${model:-unknown}"
     fi
   done
@@ -115,8 +120,9 @@ command -v python3 >/dev/null 2>&1 || {
   echo 'python3 is required to select the device daemon from manifest.json.' >&2; exit 4;
 }
 
-STATION_MODEL=$(adb -s "$DEVICE" shell uname -n </dev/null 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]')
-MODEL_ID=$(printf '%s' "$STATION_MODEL" | sed 's/[^a-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//')
+STATION_MODEL=$(adb -s "$DEVICE" shell uname -n </dev/null 2>/dev/null | tr -d '\r')
+STATION_MODEL=$(strip_device_id "$STATION_MODEL")
+MODEL_ID=$(printf '%s' "$STATION_MODEL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//')
 [ -n "$MODEL_ID" ] || { echo 'Could not determine a valid station model using uname -n.' >&2; exit 7; }
 
 download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"

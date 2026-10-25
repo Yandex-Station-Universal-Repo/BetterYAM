@@ -163,7 +163,7 @@ impl Led {
         ]);
         Ok(DeviceInfo {
             id: "yandexmini".into(),
-            model: "yandexmini".into(),
+            model: String::new(),
             architecture: std::env::consts::ARCH.into(),
             led_count: LED_COUNT,
             features,

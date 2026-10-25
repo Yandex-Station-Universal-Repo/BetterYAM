@@ -5,6 +5,7 @@
       "device": "yandexmini",
       "models": [
         "yandexmini",
+        "yandexstationmini",
         "yandexstationmini_c190"
       ],
       "manifest_path": "yandexmini/Cargo.toml",

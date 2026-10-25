@@ -427,6 +427,24 @@ fn device_identifier(model: &str) -> String {
     }
     identifier.trim_end_matches('_').to_string()
 }
+
+fn strip_device_id(hostname: &str) -> String {
+    let Some(separator) = hostname.rfind(|character| character == '-' || character == '_') else {
+        return hostname.to_string();
+    };
+    let (model, suffix) = hostname.split_at(separator);
+    let device_id = &suffix[1..];
+    if device_id.len() == 4
+        && !model.is_empty()
+        && device_id
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+    {
+        model.to_string()
+    } else {
+        hostname.to_string()
+    }
+}
 const MAX_UNPACKED_BYTES: u64 = 32 * 1024 * 1024;
 const FREE_SPACE_RESERVE: u64 = 8 * 1024 * 1024;
 fn unpack_budget(directory: &Path) -> Result<u64> {
@@ -535,7 +553,7 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
         }
     }
     let arch = std::env::consts::ARCH.to_string();
-    let model = forced.unwrap_or_else(|| {
+    let hostname = forced.unwrap_or_else(|| {
         Command::new("uname")
             .arg("-n")
             .output()
@@ -545,6 +563,7 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             .filter(|model| !model.is_empty())
             .unwrap_or_else(|| "unknown".into())
     });
+    let model = strip_device_id(&hostname);
     let mut features = vec!["runtime.lua.v1".into(), "plugin.yap.v1".into()];
     if arch.starts_with("arm") {
         features.push("arch.armhf".into())
@@ -2807,6 +2826,25 @@ mod tests {
         );
         assert_eq!(device.capabilities.get("led.ring.rgb"), Some(&true));
         assert_eq!(device.capabilities.get("clock.segments"), Some(&false));
+    }
+
+    #[test]
+    fn strips_only_a_separated_four_character_uppercase_device_id() {
+        assert_eq!(
+            strip_device_id("Yandex-Station-Midi-44QK"),
+            "Yandex-Station-Midi"
+        );
+        assert_eq!(strip_device_id("Yandex-Mini3-J3MK"), "Yandex-Mini3");
+        assert_eq!(
+            strip_device_id("YandexStationMini_729E"),
+            "YandexStationMini"
+        );
+        assert_eq!(strip_device_id("Yandex-Lite-gen2"), "Yandex-Lite-gen2");
+        assert_eq!(
+            strip_device_id("yandex-station-mini-44qk"),
+            "yandex-station-mini-44qk"
+        );
+        assert_eq!(strip_device_id("YandexMini"), "YandexMini");
     }
 
     #[test]

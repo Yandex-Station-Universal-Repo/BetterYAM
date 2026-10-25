@@ -22,6 +22,10 @@ $yamBinary = Join-Path $binDir "yam-bin.exe"
 $yamCommand = Join-Path $binDir "yam.cmd"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("yam-" + [guid]::NewGuid())
 
+function Remove-StationDeviceId([string]$Model) {
+    return ($Model -creplace '[-_][A-Z0-9]{4}$', '')
+}
+
 if ($Uninstall) {
     if (Test-Path $Prefix) { Remove-Item -Force -Recurse $Prefix }
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -39,7 +43,7 @@ function Select-StationSerial {
                 $serial = $fields[0]
                 $arch = & adb -s $serial shell uname -m 2>$null
                 if ($arch -match "aarch64|arm64|armv7l|armv7") {
-                    $model = (& adb -s $serial shell uname -n 2>$null).Trim()
+                    $model = Remove-StationDeviceId ((& adb -s $serial shell uname -n 2>$null).Trim())
                     [PSCustomObject]@{ Serial = $serial; Model = $(if ($model) { $model } else { "unknown" }) }
                 }
             }
@@ -105,8 +109,9 @@ try {
         $serial = "$stationIp`:5555"
         & adb -s $serial get-state | Out-Null
     }
-    $stationModel = (& adb -s $serial shell uname -n 2>$null).Trim()
-    if (-not $stationModel) { throw "Could not determine station model using uname -n" }
+    $stationHostname = (& adb -s $serial shell uname -n 2>$null).Trim()
+    if (-not $stationHostname) { throw "Could not determine station model using uname -n" }
+    $stationModel = Remove-StationDeviceId $stationHostname
     $modelId = ($stationModel.ToLowerInvariant() -replace '[^a-z0-9_-]', '-' -replace '-+', '-').Trim('-')
     if (-not $modelId) { throw "Station model did not produce a valid daemon ID" }
     $matches = @($releaseManifest.devices | Where-Object {

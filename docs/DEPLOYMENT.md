@@ -1,7 +1,14 @@
 # Установка
 
-Нужен `adb`. Установщик определяет имя модели через `uname -n`, ищет точную
-запись в release `manifest.json`, проверяет SHA-256 и устанавливает выбранный
+Нужен `adb`. `uname -a` показывает сведения о ядре; nodename в его выводе —
+второе поле после `Linux`, его отдельно возвращает `uname -n`. Установщик
+получает hostname через `uname -n`, удаляет конечный
+отдельный сегмент из четырёх заглавных ASCII-букв/цифр (ID экземпляра
+устройства), затем ищет точную модель в release `manifest.json`. Например,
+`Yandex-Station-Midi-44QK`, `Yandex-Mini3-J3MK` и
+`YandexStationMini_729E` превращаются соответственно в
+`Yandex-Station-Midi`, `Yandex-Mini3` и `YandexStationMini`. Модельный суффикс
+`gen2` не удаляется. Установщик проверяет SHA-256 и устанавливает выбранный
 BetterYAMd в `/data/quazar/betteryam`.
 
 ```sh
