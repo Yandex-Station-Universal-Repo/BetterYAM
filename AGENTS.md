@@ -2,12 +2,15 @@
 
 ## Repository layout
 
-- `src/main.rs` builds `betteryamd`, the HTTP API, package manager and Lua bridge.
+- `yandexmini/main.rs` builds the Yandex Mini `betteryamd` HTTP API, package manager and Lua bridge.
+- `yandexmini/led.rs` implements the Mini LED hardware adapter.
 - `src/bin/yam.rs` builds `yam`, the command-line client.
-- `web/index.html` is embedded in the binary with `include_str!`.
+- `yandexmini/web/index.html` is embedded in the Mini daemon.
 - `examples/` contains source trees for `.yap` packages.
 - `docs/` is the public developer documentation.
-- `install.sh` installs the `yam` CLI and the model-specific `betteryamd` Linux release asset.
+- `manifest.json` lists device daemon packages and build targets.
+- `tools/build-daemons.sh` builds all manifest entries and creates release manifest/checksums.
+- `install.sh` installs the `yam` CLI and selects the device daemon by `uname -n`.
 - `tools/convert_apkg.py` converts an apkg repository package into `.yap`.
 
 ## Required checks
@@ -34,7 +37,8 @@ Do not commit `target/`, package archives, device data, credentials or logs.
 - Advertise a feature in `DeviceProfile` only when its adapter is detectable and usable.
 - Keep path handling safe: package paths are relative and must reject parent components.
 - Long-running Lua packages must be cancellable through the shared cancellation token and should call `alice.sleep` or `alice.set` regularly.
-- Never put model-specific hardware code in the shared runtime. Each model's `betteryamd` release must implement its hardware capabilities and report availability in the Device API profile.
+- Keep model-specific HTTP APIs, hardware drivers and capabilities inside that device's directory.
+- Report unsupported device features as unavailable; do not silently route them to another device daemon.
 
 ## Package conventions
 

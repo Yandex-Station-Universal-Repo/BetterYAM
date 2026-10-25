@@ -82,6 +82,8 @@ function Get-ReleaseAsset([string]$Name) {
 try {
     New-Item -ItemType Directory -Force -Path $tmp, $binDir | Out-Null
     $checksums = Get-ReleaseAsset "SHA256SUMS"
+    $manifestFile = Get-ReleaseAsset "manifest.json"
+    $releaseManifest = Get-Content -Raw $manifestFile | ConvertFrom-Json
     $downloads = @{}
     foreach ($name in @("yam-x86_64-pc-windows-msvc.exe")) {
         $download = Get-ReleaseAsset $name
@@ -107,16 +109,27 @@ try {
     if (-not $stationModel) { throw "Could not determine station model using uname -n" }
     $modelId = ($stationModel.ToLowerInvariant() -replace '[^a-z0-9_-]', '-' -replace '-+', '-').Trim('-')
     if (-not $modelId) { throw "Station model did not produce a valid daemon ID" }
-    $daemonAsset = "betteryamd-$modelId-aarch64-linux"
+    $matches = @($releaseManifest.devices | Where-Object {
+            $_.models -contains $modelId -or ($_.models.Count -eq 0 -and $_.device -eq $modelId)
+        })
+    if ($matches.Count -ne 1) { throw "No unique BetterYAMd manifest entry for model '$stationModel' ($modelId)" }
+    $deviceEntry = $matches[0]
+    $daemonAsset = $deviceEntry.asset
+    $daemonSha256 = $deviceEntry.sha256sum
+    if (-not $daemonAsset -or -not $daemonSha256 -or -not $deviceEntry.filepath) {
+        throw "Incomplete release manifest entry for model '$stationModel'"
+    }
+    $listedSha256 = ((Get-Content $checksums | Where-Object {
+                $_ -match ("\s" + [regex]::Escape($daemonAsset) + "$")
+            }) -split "\s+")[0]
+    if ($listedSha256 -ne $daemonSha256) { throw "Manifest checksum mismatch for $daemonAsset" }
     try {
         $daemonBinary = Get-ReleaseAsset $daemonAsset
     } catch {
         throw "No BetterYAMd release asset for model '$stationModel' ($daemonAsset)"
     }
-    $expected = ((Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($daemonAsset) + "$") }) -split "\s+")[0]
-    if (-not $expected) { throw "No SHA-256 checksum for $daemonAsset" }
     $actual = (Get-FileHash -Algorithm SHA256 $daemonBinary).Hash.ToLowerInvariant()
-    if ($actual -ne $expected.ToLowerInvariant()) { throw "Checksum mismatch for $daemonAsset" }
+    if ($actual -ne $daemonSha256.ToLowerInvariant()) { throw "Checksum mismatch for $daemonAsset" }
     $devicePrefix = "/data/quazar/betteryam"
     & adb -s $serial shell "mkdir -p $devicePrefix/bin $devicePrefix/data" | Out-Null
     & adb -s $serial push $daemonBinary "$devicePrefix/bin/betteryamd.new" | Out-Null
@@ -137,7 +150,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
         [Environment]::SetEnvironmentVariable("Path", (($userPath, $binDir | Where-Object { $_ }) -join ";"), "User")
     }
     $env:Path = "$binDir;$env:Path"
-    Write-Host "BetterYAM $tag installed in $Prefix and BetterYAMd for $stationModel deployed to $stationIp"
+    Write-Host "BetterYAM $tag installed in $Prefix and BetterYAMd ($($deviceEntry.filepath)) for $stationModel deployed to $stationIp"
     Write-Host "Use yam list or yam --url $yamUrl list"
 } finally {
     if (Test-Path $tmp) { Remove-Item -Force -Recurse $tmp }

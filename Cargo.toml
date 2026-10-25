@@ -1,11 +1,12 @@
+[workspace]
+members = [".", "yandexmini"]
+default-members = ["."]
+resolver = "2"
+
 [package]
-name = "betteryam"
+name = "betteryam-cli"
 version = "0.1.14"
 edition = "2021"
-
-[[bin]]
-name = "betteryamd"
-path = "src/main.rs"
 
 [[bin]]
 name = "yam"
@@ -13,25 +14,6 @@ path = "src/bin/yam.rs"
 
 [dependencies]
 anyhow = "1"
-async-trait = "0.1"
-axum = { version = "0.7", features = ["multipart"] }
 clap = { version = "4", features = ["derive", "env"] }
-flate2 = "1"
-mlua = { version = "0.10", features = ["lua54", "vendored", "serialize", "send"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-url = "2"
-tokio = { version = "1", features = ["full"] }
-toml = "0.8"
-tower-http = { version = "0.6", features = ["trace"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4"] }
-walkdir = "2"
-zip = "2"
-tar = "0.4"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

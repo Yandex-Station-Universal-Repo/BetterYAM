@@ -51,6 +51,7 @@ async fn logo_off(State(a): State<App>) -> Result<StatusCode, ApiError> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Settings {
+    #[serde(default)]
     led: LedSettings,
     #[serde(default)]
     web: WebSettings,
@@ -1141,16 +1142,10 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
             )?;
             segments.set_metatable(Some(segment_call));
             clock.set("segments", segments)?;
-            let clock_led = led.clone();
+            let clock_available = capability_available(&device, "clock");
             clock.set(
                 "available",
-                lua.create_function(move |_, ()| {
-                    let value = device_api_json(&clock_led, Method::GET, "clock", None)
-                        .map_err(mlua::Error::external)?;
-                    let info: ClockInfo =
-                        serde_json::from_value(value).map_err(mlua::Error::external)?;
-                    Ok(info.available)
-                })?,
+                lua.create_function(move |_, ()| Ok(clock_available))?,
             )?;
             let time_led = led.clone();
             clock.set(
@@ -1935,12 +1930,11 @@ async fn get_sensors(State(a): State<App>) -> Result<Json<Vec<SensorInfo>>, ApiE
     Ok(Json(serde_json::from_value(value)?))
 }
 async fn get_clock(State(a): State<App>) -> Result<Json<ClockInfo>, ApiError> {
-    let value = a
-        .led
-        .api_json(Method::GET, "clock", None)
-        .await
-        .map_err(ApiError::backend)?;
-    Ok(Json(serde_json::from_value(value)?))
+    let device = a.device.lock().await;
+    Ok(Json(ClockInfo {
+        available: capability_available(&device, "clock"),
+        segments: Vec::new(),
+    }))
 }
 async fn put_clock(
     State(a): State<App>,
@@ -1979,40 +1973,14 @@ async fn put_settings(
     State(a): State<App>,
     Json(s): Json<Settings>,
 ) -> Result<StatusCode, ApiError> {
-    s.led.validate()?;
     if s.web.ui && !s.web.api {
         return Err(ApiError::new(anyhow!("web.ui requires web.api")));
     }
-    let refreshed_device = if s.led.http.is_some() {
-        Some(
-            Led::new(s.led.clone())
-                .device_info()
-                .await
-                .map_err(ApiError::backend)?,
-        )
-    } else {
-        None
-    };
     write_atomic(
         &a.root.join("settings.toml"),
         toml::to_string_pretty(&s)?.as_bytes(),
     )?;
     *a.settings.lock().await = s.clone();
-    a.led.replace_settings(s.led).await;
-    let mut device = a.device.lock().await;
-    if let Some(info) = refreshed_device {
-        apply_device_info(&mut device, info);
-    } else {
-        device.led_count = 0;
-        device.features.retain(|feature| {
-            feature.starts_with("runtime.")
-                || feature.starts_with("plugin.")
-                || feature.starts_with("arch.")
-        });
-        device.capabilities.clear();
-        populate_capabilities(&mut device);
-        device.source = "device API not configured".into();
-    }
     Ok(StatusCode::NO_CONTENT)
 }
 async fn led_set(State(a): State<App>, Json(f): Json<Frame>) -> Result<StatusCode, ApiError> {
@@ -2088,29 +2056,12 @@ async fn main() -> Result<()> {
             return Err(error).with_context(|| format!("read {}", settings_path.display()))
         }
     };
-    settings.led.validate()?;
-    let led = Arc::new(Led::new(settings.led.clone()));
+    let led = Arc::new(Led::new()?);
     let mut device = detect_device(&args.data_dir, args.model);
     if device.id.is_empty() {
         device.id = device_identifier(&device.model);
     }
-    match led.device_info().await {
-        Ok(info) => {
-            apply_device_info(&mut device, info);
-        }
-        Err(error) => {
-            device.led_count = 0;
-            device.features.retain(|feature| {
-                feature.starts_with("runtime.")
-                    || feature.starts_with("plugin.")
-                    || feature.starts_with("arch.")
-            });
-            device.capabilities.clear();
-            populate_capabilities(&mut device);
-            device.source = "device API unavailable".into();
-            tracing::warn!(%error, "device API unavailable; hardware capabilities are not advertised");
-        }
-    }
+    apply_device_info(&mut device, led.device_info().await?);
     tracing::info!(model=%device.model,features=?device.features,capabilities=?device.capabilities,"detected device");
     let app = App {
         root: args.data_dir.clone(),
@@ -2187,7 +2138,7 @@ async fn main() -> Result<()> {
     axum::serve(l, router).await?;
     Ok(())
 }
-const UI: &str = include_str!("../web/index.html");
+const UI: &str = include_str!("web/index.html");
 
 #[cfg(test)]
 mod tests {

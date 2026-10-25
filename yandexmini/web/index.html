@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>BetterYAM</title>
+  <title>BetterYAM - Yandex Mini</title>
   <style>
     body { max-width: 900px; margin: 3rem auto; font: 16px system-ui; background: #10131a; color: #e8edf7; }
     button, input, select { padding: .55rem; margin: .2rem; }
@@ -30,7 +30,6 @@
   </section>
   <section>
     <h2>Настройки</h2>
-    <label>Device API base URL <input id="http-base-url" type="url" size="36" placeholder="http://device-daemon:port/"></label>
     <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
     <button onclick="saveSettings()">Сохранить</button>
   </section>
@@ -41,7 +40,6 @@ const pluginsElement = document.getElementById('plugins');
 const uploadForm = document.getElementById('upload');
 const packageFile = document.getElementById('package-file');
 const uploadStatus = document.getElementById('upload-status');
-const httpBaseUrlInput = document.getElementById('http-base-url');
 const binariesInput = document.getElementById('binaries');
 const colorsInput = document.getElementById('colors');
 let deviceLedCount = 0;
@@ -68,8 +66,6 @@ async function load() {
     deviceElement.textContent = `Колонка: ${currentDevice.model} · ${currentDevice.architecture} · ${capabilities.join(', ')}`;
     deviceLedCount = currentDevice.led_count || 0;
     pluginsElement.innerHTML = pluginData.map(pluginRow).join('') || 'Пакетов нет';
-    const http = settings.led.http || {};
-    httpBaseUrlInput.value = http.base_url || '';
     binariesInput.checked = settings.allow_plugin_binaries;
   } catch (error) { alert(error.message); }
 }
@@ -90,8 +86,6 @@ async function turnOff() { try { await request('/led/off', { method: 'POST' }); 
 async function saveSettings() {
   try {
     const settings = await request('/settings').then(r => r.json());
-    settings.led.backend = 'http';
-    settings.led.http = httpBaseUrlInput.value ? { base_url: httpBaseUrlInput.value } : null;
     settings.allow_plugin_binaries = binariesInput.checked;
     await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) });
     await load();

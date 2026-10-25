@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "devices": [
+    {
+      "device": "yandexmini",
+      "models": [
+        "yandexmini"
+      ],
+      "manifest_path": "yandexmini/Cargo.toml",
+      "binary": "betteryamd-yandexmini",
+      "asset": "betteryamd-yandexmini-aarch64-linux",
+      "target": "aarch64-unknown-linux-musl",
+      "filepath": "dist/assets/betteryamd-yandexmini-aarch64-linux",
+      "sha256sum": null
+    }
+  ]
+}

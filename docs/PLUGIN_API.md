@@ -40,10 +40,14 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 `alice.clock.segments.is_available()`.
 
 `device` содержит `id`, `model`, `architecture`, `led_count`, `features` и
-boolean-словарь `capabilities`, полученные от реализации Device API для текущей
-модели. `features` сохраняет совместимость с `plugin.toml`. `alice.logo.set`
-и `alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
-использует `device.led_count`; проверку frame выполняет BetterYAMd.
+boolean-словарь `capabilities`, заполненные модельным BetterYAMd.
+`features` сохраняет совместимость с `plugin.toml`. `alice.logo.set` и
+`alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
+использует `device.led_count`; проверку frame выполняет драйвер этой модели.
+
+Например, текущий Yandex Mini backend сообщает `led.ring.rgb` и `led.ring.6`
+как доступные; clock, volume, audio, Bluetooth, display, sensors, input и IPC
+остаются в plugin API, но помечены недоступными до появления их драйверов.
 
 ## Совместимость и сеть
 

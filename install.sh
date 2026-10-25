@@ -111,17 +111,46 @@ if [ "$ACTION" = uninstall ]; then
   exit 0
 fi
 
+command -v python3 >/dev/null 2>&1 || {
+  echo 'python3 is required to select the device daemon from manifest.json.' >&2; exit 4;
+}
+
 STATION_MODEL=$(adb -s "$DEVICE" shell uname -n </dev/null 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]')
 MODEL_ID=$(printf '%s' "$STATION_MODEL" | sed 's/[^a-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//')
 [ -n "$MODEL_ID" ] || { echo 'Could not determine a valid station model using uname -n.' >&2; exit 7; }
-DAEMON_ASSET="betteryamd-${MODEL_ID}-aarch64-linux"
 
 download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"
+download "$RELEASE_URL/manifest.json" "$tmpdir/manifest.json"
 download "$RELEASE_URL/$CLI_ASSET" "$tmpdir/$CLI_ASSET"
-if ! download "$RELEASE_URL/$DAEMON_ASSET" "$tmpdir/$DAEMON_ASSET"; then
-  echo "No BetterYAMd release asset for station model '$STATION_MODEL' ($DAEMON_ASSET)." >&2
+if ! DAEMON_RECORD=$(python3 - "$tmpdir/manifest.json" "$MODEL_ID" <<'PY'
+import json
+import sys
+
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+matches = [
+    device for device in manifest.get("devices", [])
+    if sys.argv[2] in device.get("models", [device.get("device", "")])
+]
+if len(matches) != 1:
+    raise SystemExit(1)
+entry = matches[0]
+for field in ("asset", "sha256sum", "filepath"):
+    value = entry.get(field)
+    if not isinstance(value, str) or not value:
+        raise SystemExit(1)
+print("\t".join(entry[field] for field in ("asset", "sha256sum", "filepath")))
+PY
+); then
+  echo "No unique BetterYAMd manifest entry for station model '$STATION_MODEL' ($MODEL_ID)." >&2
   exit 8
 fi
+IFS="$(printf '\t')" read -r DAEMON_ASSET DAEMON_SHA256 DAEMON_FILEPATH <<EOF
+$DAEMON_RECORD
+EOF
+[ "$(awk -v name="$DAEMON_ASSET" '$2 == name {print $1}' "$tmpdir/SHA256SUMS")" = "$DAEMON_SHA256" ] || {
+  echo "Manifest checksum mismatch for $DAEMON_ASSET." >&2; exit 8;
+}
+download "$RELEASE_URL/$DAEMON_ASSET" "$tmpdir/$DAEMON_ASSET"
 verify "$tmpdir/$CLI_ASSET"
 verify "$tmpdir/$DAEMON_ASSET"
 
@@ -137,4 +166,4 @@ adb -s "$DEVICE" push "$tmpdir/$DAEMON_ASSET" "$DEVICE_PREFIX/bin/betteryamd.new
 adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/betteryamd.new; if [ -f $DEVICE_PREFIX/betteryamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/betteryamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/betteryamd.pid); fi; mv $DEVICE_PREFIX/bin/betteryamd.new $DEVICE_PREFIX/bin/betteryamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/betteryamd.pid --startas $DEVICE_PREFIX/bin/betteryamd -- --data-dir $DEVICE_PREFIX/data" </dev/null
 
 echo "BetterYAM $VERSION CLI installed in $BIN_DIR/yam"
-echo "BetterYAMd for $STATION_MODEL deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"
+echo "BetterYAMd ($DAEMON_FILEPATH) for $STATION_MODEL deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"
