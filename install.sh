@@ -20,8 +20,8 @@ log() {
 
 if [ "$ACTION" = install ]; then
   case "$(uname -s):$(uname -m)" in
-    Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
-    Darwin:arm64|Darwin:aarch64) CLI_ASSET=yam-aarch64-apple-darwin ;;
+    Linux:x86_64|Linux:amd64) CLI_ASSET=byam-x86_64-unknown-linux-musl ;;
+    Darwin:arm64|Darwin:aarch64) CLI_ASSET=byam-aarch64-apple-darwin ;;
     *) echo "Unsupported host platform $(uname -s) $(uname -m)." >&2; exit 3 ;;
   esac
 fi
@@ -137,7 +137,7 @@ esac
 [ -n "$STATION_IP" ] || { echo 'IP address is required.' >&2; exit 6; }
 
 if [ "$ACTION" = uninstall ]; then
-  rm -f "$BIN_DIR/yam" "$BIN_DIR/yam-bin"
+  rm -f "$BIN_DIR/byam" "$BIN_DIR/byam-bin" "$BIN_DIR/yam"
   adb -s "$DEVICE" shell "if [ -f $DEVICE_PREFIX/betteryamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/betteryamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/betteryamd.pid); fi; rm -rf $DEVICE_PREFIX" </dev/null
   echo "YAM removed from $BIN_DIR and $DEVICE ($DEVICE_PREFIX)."
   exit 0
@@ -192,15 +192,20 @@ verify "$tmpdir/$CLI_ASSET"
 verify "$tmpdir/$DAEMON_ASSET"
 
 mkdir -p "$BIN_DIR"
-install -m 0755 "$tmpdir/$CLI_ASSET" "$BIN_DIR/yam-bin"
+install -m 0755 "$tmpdir/$CLI_ASSET" "$BIN_DIR/byam-bin"
+cat >"$BIN_DIR/byam" <<EOF
+#!/bin/sh
+exec env YAM_URL="\${YAM_URL:-http://$STATION_IP:8099}" "$BIN_DIR/byam-bin" "\$@"
+EOF
+chmod 0755 "$BIN_DIR/byam"
 cat >"$BIN_DIR/yam" <<EOF
 #!/bin/sh
-exec env YAM_URL="\${YAM_URL:-http://$STATION_IP:8099}" "$BIN_DIR/yam-bin" "\$@"
+exec "$BIN_DIR/byam" "\$@"
 EOF
 chmod 0755 "$BIN_DIR/yam"
 adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data" </dev/null
 adb -s "$DEVICE" push "$tmpdir/$DAEMON_ASSET" "$DEVICE_PREFIX/bin/betteryamd.new" </dev/null >/dev/null
 adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/betteryamd.new; if [ -f $DEVICE_PREFIX/betteryamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/betteryamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/betteryamd.pid); fi; mv $DEVICE_PREFIX/bin/betteryamd.new $DEVICE_PREFIX/bin/betteryamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/betteryamd.pid --startas $DEVICE_PREFIX/bin/betteryamd -- --data-dir $DEVICE_PREFIX/data" </dev/null
 
-echo "BetterYAM $VERSION CLI installed in $BIN_DIR/yam"
+echo "BetterYAM $VERSION CLI installed in $BIN_DIR/byam (yam alias also available)"
 echo "BetterYAMd ($DAEMON_FILEPATH) for $STATION_MODEL deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"

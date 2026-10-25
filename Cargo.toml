@@ -5,11 +5,11 @@ resolver = "2"
 
 [package]
 name = "betteryam-cli"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 
 [[bin]]
-name = "yam"
+name = "byam"
 path = "src/bin/yam.rs"
 
 [dependencies]

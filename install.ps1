@@ -18,7 +18,8 @@ if ($Version -eq "latest") {
 
 $baseUrl = "https://github.com/$repo/releases/download/$tag"
 $binDir = Join-Path $Prefix "bin"
-$yamBinary = Join-Path $binDir "yam-bin.exe"
+$byamBinary = Join-Path $binDir "byam-bin.exe"
+$byamCommand = Join-Path $binDir "byam.cmd"
 $yamCommand = Join-Path $binDir "yam.cmd"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("yam-" + [guid]::NewGuid())
 
@@ -89,7 +90,7 @@ try {
     $manifestFile = Get-ReleaseAsset "manifest.json"
     $releaseManifest = Get-Content -Raw $manifestFile | ConvertFrom-Json
     $downloads = @{}
-    foreach ($name in @("yam-x86_64-pc-windows-msvc.exe")) {
+    foreach ($name in @("byam-x86_64-pc-windows-msvc.exe")) {
         $download = Get-ReleaseAsset $name
         $expected = ((Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($name) + "$") }) -split "\s+")[0]
         if (-not $expected) { throw "No SHA-256 checksum for $name" }
@@ -97,7 +98,7 @@ try {
         if ($actual -ne $expected.ToLowerInvariant()) { throw "Checksum mismatch for $name" }
         $downloads[$name] = $download
     }
-    Copy-Item -Force $downloads["yam-x86_64-pc-windows-msvc.exe"] $yamBinary
+    Copy-Item -Force $downloads["byam-x86_64-pc-windows-msvc.exe"] $byamBinary
 
     $stationIp = Find-StationIp
     if (-not $stationIp) { throw "Station IP address is required" }
@@ -147,8 +148,9 @@ try {
     @"
 @echo off
 if not defined YAM_URL set "YAM_URL=$yamUrl"
-"%~dp0yam-bin.exe" %*
+"%~dp0byam-bin.exe" %*
 "@ | Set-Content -Encoding ascii $yamCommand
+    Copy-Item -Force $yamCommand $byamCommand
 
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if (-not (($userPath -split ";") -contains $binDir)) {
@@ -156,7 +158,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     }
     $env:Path = "$binDir;$env:Path"
     Write-Host "BetterYAM $tag installed in $Prefix and BetterYAMd ($($deviceEntry.filepath)) for $stationModel deployed to $stationIp"
-    Write-Host "Use yam list or yam --url $yamUrl list"
+    Write-Host "Use byam list or byam --url $yamUrl list (yam.cmd is also available)"
 } finally {
     if (Test-Path $tmp) { Remove-Item -Force -Recurse $tmp }
 }

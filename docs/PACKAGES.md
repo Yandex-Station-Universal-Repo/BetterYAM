@@ -46,3 +46,6 @@ yam rm nano
 сохранены для обратной совместимости.
 
 Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета. Hardware операции маршрутизируются через Device API текущей модели BetterYAMd.
+
+В новых установках основная команда CLI — `byam`; `yam` сохраняется как
+совместимый alias.

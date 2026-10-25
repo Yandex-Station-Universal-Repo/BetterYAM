@@ -1,6 +1,7 @@
 # BetterYAM
 
-BetterYAM contains the `yam` HTTP client and per-device BetterYAMd daemons.
+BetterYAM contains the `byam` HTTP client and per-device BetterYAMd daemons.
+The installer also installs `yam` as a compatibility alias.
 Each supported station model owns its API server, Web Panel, and hardware
 implementation in its device directory. The first device package is
 [`yandexmini/`](./yandexmini/).
@@ -20,14 +21,20 @@ On Linux or macOS, connect the station with ADB, then run the installer:
 curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh
 ```
 
+The installed CLI command is `byam` (`yam` remains as a compatibility alias):
+
+```sh
+byam --help
+```
+
 To install a specific release, pass its version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- 0.1.14
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- 0.1.17
 ```
 
 Alternatively, from a local repository clone run `sh install.sh` (or
-`sh install.sh 0.1.14`). The script requires `adb` and a connected station; if
+`sh install.sh 0.1.17`). The script requires `adb` and a connected station; if
 multiple supported stations are connected, it prompts you to select one.
 
 The installer reads the station hostname with `adb shell uname -n`, removes a

@@ -9,7 +9,7 @@ const DEFAULT_REGISTRY_INDEX: &str =
     "https://raw.githubusercontent.com/nyakokitsu/yapkg/registry/index.json";
 
 #[derive(Parser)]
-#[command(name = "yam", about = "BetterYAM package manager")]
+#[command(name = "byam", about = "BetterYAM package manager")]
 struct Cli {
     #[arg(long, env = "YAM_URL", default_value = "http://127.0.0.1:8099")]
     url: String,

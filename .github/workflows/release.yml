@@ -16,16 +16,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            binary: yam
-            asset: yam-x86_64-unknown-linux-musl
+            binary: byam
+            asset: byam-x86_64-unknown-linux-musl
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: yam
-            asset: yam-aarch64-apple-darwin
+            binary: byam
+            asset: byam-aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: yam.exe
-            asset: yam-x86_64-pc-windows-msvc.exe
+            binary: byam.exe
+            asset: byam-x86_64-pc-windows-msvc.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build CLI
-        run: cargo build --locked --release --target ${{ matrix.target }} --bin yam
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin byam
       - name: Stage CLI asset
         shell: bash
         run: |
@@ -102,9 +102,9 @@ jobs:
               if asset not in names or hashlib.sha256(path.read_bytes()).hexdigest() != device["sha256sum"]:
                   raise SystemExit(f"daemon asset does not match manifest: {asset}")
           required = {
-              "yam-x86_64-unknown-linux-musl",
-              "yam-aarch64-apple-darwin",
-              "yam-x86_64-pc-windows-msvc.exe",
+              "byam-x86_64-unknown-linux-musl",
+              "byam-aarch64-apple-darwin",
+              "byam-x86_64-pc-windows-msvc.exe",
           }
           missing = required - names
           if missing:
