@@ -11,6 +11,22 @@ Run `sh tools/build-daemons.sh` with the AArch64 musl target toolchain installed
 `dist/SHA256SUMS`. Release `manifest.json` and each generated daemon asset.
 ## Installing on a station
 
+On Linux or macOS, connect the station with ADB, then run the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/main/install.sh | sh
+```
+
+To install a specific release, pass its version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/main/install.sh | sh -s -- 0.1.14
+```
+
+Alternatively, from a local repository clone run `sh install.sh` (or
+`sh install.sh 0.1.14`). The script requires `adb` and a connected station; if
+multiple supported stations are connected, it prompts you to select one.
+
 The installer reads the station hostname with `adb shell uname -n`, removes a
 terminal device ID when it is a separate four-character uppercase
 alphanumeric segment, normalizes the remaining model name, then matches it
