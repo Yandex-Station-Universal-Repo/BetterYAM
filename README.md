@@ -231,28 +231,45 @@ permissions `ipc.read`/`ipc.control` и allowlist сервисов в `[ipc].ser
 
 ## Сборка и тестирование
 
-Нужны Rust stable и компоненты из соответствующего toolchain. Основные проверки
-для workspace:
+Для локальной сборки и установки daemon-а нужны Rust stable, `adb` и
+toolchain для target выбранного устройства из корневого `manifest.json`.
+Запустите общий [скрипт сборки и деплоя](./tools/build-deploy.sh):
+
+```sh
+./tools/build-deploy.sh
+```
+
+Без аргументов он предложит выбрать daemon и подключённую по ADB колонку.
+Выбор можно передать аргументами — ID daemon-а и serial устройства:
+
+```sh
+./tools/build-deploy.sh yandexmini 192.168.0.171:5555
+```
+
+Или использовать именованные параметры. Флаг `--docker` собирает daemon
+в Docker вместо локального cross toolchain:
+
+```sh
+./tools/build-deploy.sh --device yandexmini --serial 192.168.0.171:5555 --docker
+```
+
+Скрипт собирает stripped release-бинарник, загружает его во временное имя,
+сохраняет предыдущую версию в
+`/data/quazar/betteryam/bin/betteryamd.previous`, заменяет daemon и
+перезапускает его. Если новая версия не запускается, выполняется попытка
+отката. Docker-режиму нужен доступный Docker; без `--docker` настройте
+cross-compilation toolchain соответствующей архитектуры. Не запускайте
+параллельные деплои на одну колонку. Перед установкой скрипт сверяет hostname
+Станции с aliases выбранного daemon-а в manifest и отказывается от несовпадения.
+
+Для разработки и CI доступны стандартные проверки:
 
 ```sh
 cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo test --workspace
 sh -n install.sh
-sh -n tools/build-daemons.sh
-```
-
-Сборка daemon-ов, перечисленных в корневом manifest:
-
-```sh
-sh tools/build-daemons.sh
-```
-
-Скрипт создаёт release manifest, assets и SHA256 checksums в `dist/`.
-Сборка всех manifest entries выполняется также в Docker:
-
-```sh
-BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh
+bash -n tools/build-deploy.sh
 ```
 
 Публикация автоматизирована GitHub Actions при push тега `v*`. Перед выпуском
