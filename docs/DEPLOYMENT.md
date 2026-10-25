@@ -55,10 +55,12 @@ release assets. Неизвестная модель не сопоставляе�
 
 ## YAM API и capability profile
 
-CLI подключается к HTTP API BetterYAMd. Сервер API и Web Panel принадлежат
-папке соответствующей модели; модельный backend управляет своим hardware
-напрямую. Yandex Mini реализован в `yandexmini/`: `main.rs` содержит API и
-plugin runtime, `led.rs` — аппаратную функцию LED.
+CLI и общая Web Panel подключаются к HTTP API BetterYAMd. API и hardware backend
+реализуются для конкретного устройства; frontend панели должен быть общим, а
+доступные разделы и действия определяются capabilities профиля, не моделью.
+Yandex Mini реализован в `yandexmini/`: `main.rs` содержит API и plugin runtime,
+`led.rs` — аппаратную функцию LED. Контракт интеграции панели описан в
+[WEB_PANEL_INTEGRATION.md](./WEB_PANEL_INTEGRATION.md).
 
 `GET /device` возвращает `id`, `model`, `architecture`, `led_count`, `features`
 и словарь `capabilities` с boolean значениями. `features` сохраняется для

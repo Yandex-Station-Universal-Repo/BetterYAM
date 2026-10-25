@@ -1,16 +1,38 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
+use std::io::{IsTerminal, Write};
 use std::process::Command as ProcessCommand;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{fs, path::Path, path::PathBuf};
 
 const DEFAULT_REGISTRY_INDEX: &str =
     "https://raw.githubusercontent.com/nyakokitsu/yapkg/registry/index.json";
+static COLOR_MODE: AtomicU8 = AtomicU8::new(ColorMode::Auto as u8);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+enum ColorMode {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
 
 #[derive(Parser)]
-#[command(name = "byam", about = "BetterYAM package manager")]
+#[command(
+    name = "byam",
+    about = "BetterYAM package manager",
+    version = env!("CARGO_PKG_VERSION"),
+    disable_version_flag = true
+)]
 struct Cli {
+    /// Colorize output: auto, always, or never.
+    #[arg(long, value_enum, default_value_t, global = true, env = "BYAM_COLOR")]
+    color: ColorMode,
+    /// Print version information.
+    #[arg(short = 'v', long = "version", global = true)]
+    show_version: bool,
     #[arg(
         long,
         env = "YAM_URL",
@@ -21,7 +43,7 @@ struct Cli {
     #[arg(long, env = "YAM_REGISTRY_URL", global = true)]
     registry: Option<String>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -162,13 +184,34 @@ enum ClockCommand {
     Off,
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(error) = run() {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(
+            stderr,
+            "{} {}",
+            paint_stream("✖", "31;1", OutputStream::Stderr),
+            paint_stream(&format!("{error:#}"), "31", OutputStream::Stderr)
+        );
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
+    COLOR_MODE.store(cli.color as u8, Ordering::Relaxed);
+    if cli.show_version {
+        println!("byam {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let command = cli
+        .command
+        .context("a command is required (run `byam --help` for usage)")?;
     let client = Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
-    match cli.command {
+    match command {
         Command::Install {
             package,
             version,
@@ -222,14 +265,14 @@ fn main() -> Result<()> {
         Command::Ps => {
             let packages: Value =
                 json_response(client.get(endpoint(&cli.url, "/api/plugins")).send()?)?;
-            let empty = Vec::new();
             let running = packages
                 .as_array()
-                .unwrap_or(&empty)
+                .context("invalid package list from BetterYAMd")?
                 .iter()
                 .filter(|package| package["running"] == true)
+                .cloned()
                 .collect::<Vec<_>>();
-            println!("{}", serde_json::to_string_pretty(&running)?);
+            print_installed_packages(&Value::Array(running))?;
         }
         Command::Enable { id } => set_enabled(&client, &cli.url, &id, true)?,
         Command::Disable { id } => set_enabled(&client, &cli.url, &id, false)?,
@@ -248,7 +291,7 @@ fn main() -> Result<()> {
             if !detach {
                 wait_for_package(&client, &cli.url, &id)?;
                 let log = package_logs(&client, &cli.url, &id)?;
-                print!("{}", log.get(log_offset..).unwrap_or(&log));
+                print_logs(log.get(log_offset..).unwrap_or(&log));
             }
         }
         Command::Stop { id } => print_response(
@@ -277,7 +320,7 @@ fn main() -> Result<()> {
                 .as_array()
                 .and_then(|items| items.iter().find(|item| item["manifest"]["id"] == id))
                 .context("package not found")?;
-            println!("{}", serde_json::to_string_pretty(package)?);
+            print_json(package)?;
         }
         Command::Registry { command } => {
             let registry = cli
@@ -484,13 +527,23 @@ fn print_installed_packages(packages: &Value) -> Result<()> {
         .as_array()
         .context("invalid package list from BetterYAMd")?;
     if packages.is_empty() {
-        println!("No packages installed. Browse available packages with `byam registry list`.");
+        println!(
+            "{} Browse available packages with `byam registry list`.",
+            paint("No packages installed.", "33")
+        );
         return Ok(());
     }
 
     println!(
-        "{:<22} {:<24} {:<10} {:<8} {:<8} {:<8} {:<11} NAME",
-        "ID", "VERSION", "KIND", "MODE", "ENABLED", "RUNNING", "COMPATIBLE"
+        "{:<22} {:<24} {:<10} {:<8} {:<8} {:<8} {:<11} {}",
+        paint("ID", "1;36"),
+        paint("VERSION", "1;36"),
+        paint("KIND", "1;36"),
+        paint("MODE", "1;36"),
+        paint("ENABLED", "1;36"),
+        paint("RUNNING", "1;36"),
+        paint("COMPATIBLE", "1;36"),
+        paint("NAME", "1;36")
     );
     let mut rows = packages.iter().collect::<Vec<_>>();
     rows.sort_by_key(|package| package["manifest"]["id"].as_str().unwrap_or("").to_owned());
@@ -505,7 +558,15 @@ fn print_installed_packages(packages: &Value) -> Result<()> {
         let compatible = state_label(&package["compatible"]);
         let name = table_cell(manifest["name"].as_str().unwrap_or("<unknown>"), usize::MAX);
         println!(
-            "{id:<22} {version:<24} {kind:<10} {mode:<8} {enabled:<8} {running:<8} {compatible:<11} {name}"
+            "{} {version:<24} {kind:<10} {mode:<8} {} {} {} {name}",
+            paint(&format!("{id:<22}"), "36"),
+            state_cell(enabled),
+            state_cell(running),
+            if compatible == "yes" {
+                paint(&format!("{compatible:<11}"), "32")
+            } else {
+                paint(&format!("{compatible:<11}"), "31")
+            }
         );
     }
     Ok(())
@@ -531,18 +592,25 @@ fn print_registry_packages(packages: &Value, query: Option<&str>, json: bool) ->
     });
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&matching)?);
+        let value = Value::Array(matching.iter().map(|package| (*package).clone()).collect());
+        println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
     if matching.is_empty() {
         match query {
-            Some(query) => println!("No registry packages match '{query}'."),
-            None => println!("The package registry is empty."),
+            Some(query) => println!("{} '{query}'.", paint("No registry packages match", "33")),
+            None => println!("{}", paint("The package registry is empty.", "33")),
         }
         return Ok(());
     }
 
-    println!("{:<22} {:<14} {:<24} DESCRIPTION", "ID", "VERSION", "NAME");
+    println!(
+        "{:<22} {:<14} {:<24} {}",
+        paint("ID", "1;36"),
+        paint("VERSION", "1;36"),
+        paint("NAME", "1;36"),
+        paint("DESCRIPTION", "1;36")
+    );
     for package in &matching {
         let id = table_cell(package["id"].as_str().unwrap_or("<unknown>"), 22);
         let version = table_cell(package["version"].as_str().unwrap_or("-"), 14);
@@ -553,9 +621,17 @@ fn print_registry_packages(packages: &Value, query: Option<&str>, json: bool) ->
             24,
         );
         let description = table_cell(package["description"].as_str().unwrap_or(""), usize::MAX);
-        println!("{id:<22} {version:<14} {name:<24} {description}");
+        println!(
+            "{} {} {} {description}",
+            paint(&format!("{id:<22}"), "36"),
+            paint(&format!("{version:<14}"), "35"),
+            paint(&format!("{name:<24}"), "1;37")
+        );
     }
-    println!("\n{} package version(s)", matching.len());
+    println!(
+        "\n{}",
+        paint(&format!("{} package version(s)", matching.len()), "2")
+    );
     Ok(())
 }
 
@@ -656,7 +732,10 @@ fn print_install_response_text(body: &str, json: bool, source: &str) -> Result<(
         let id = manifest["id"].as_str().unwrap_or("<unknown>");
         let name = manifest["name"].as_str().unwrap_or(id);
         let version = manifest["version"].as_str().unwrap_or("");
-        println!("Installed {name} ({id} {version}) from {source}.");
+        println!(
+            "{} {name} ({id} {version}) from {source}.",
+            paint("✓ Installed", "32;1")
+        );
     } else if !body.trim().is_empty() {
         println!("{}", body.trim());
     }
@@ -716,8 +795,12 @@ fn print_response(response: reqwest::blocking::Response) -> Result<()> {
     if !status.is_success() {
         bail!("{}: {}", status, text)
     }
-    if !text.trim().is_empty() {
-        println!("{text}");
+    if text.trim().is_empty() {
+        println!("{}", paint("✓ Done", "32;1"));
+    } else if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        print_json(&value)?;
+    } else {
+        print_logs(&text);
     }
     Ok(())
 }
@@ -736,6 +819,12 @@ fn set_enabled(client: &Client, url: &str, id: &str, desired: bool) -> Result<()
                 .post(endpoint(url, &format!("/api/plugins/{id}/toggle")))
                 .send()?,
         )?;
+    } else {
+        println!(
+            "{} Package `{id}` is already {}.",
+            paint("✓", "32;1"),
+            if desired { "enabled" } else { "disabled" }
+        );
     }
     Ok(())
 }
@@ -814,21 +903,32 @@ fn service_command(client: &Client, url: &str, command: ServiceCommand) -> Resul
                 .iter()
                 .filter(|package| package["manifest"]["launch"]["mode"] == "service")
                 .collect::<Vec<_>>();
-            println!("{:<24} {:<10} {:<10} NAME", "ID", "ENABLED", "RUNNING");
+            if services.is_empty() {
+                println!("{}", paint("No service packages installed.", "33"));
+                return Ok(());
+            }
+            println!(
+                "{:<24} {:<10} {:<10} {}",
+                paint("ID", "1;36"),
+                paint("ENABLED", "1;36"),
+                paint("RUNNING", "1;36"),
+                paint("NAME", "1;36")
+            );
             for package in services {
                 let manifest = &package["manifest"];
                 let id = manifest["id"].as_str().unwrap_or("<unknown>");
                 let name = manifest["name"].as_str().unwrap_or(id);
                 println!(
-                    "{id:<24} {:<10} {:<10} {name}",
-                    state_label(&package["enabled"]),
-                    state_label(&package["running"]),
+                    "{} {} {} {name}",
+                    paint(&format!("{id:<24}"), "36"),
+                    state_cell(state_label(&package["enabled"])),
+                    state_cell(state_label(&package["running"])),
                 );
             }
         }
         ServiceCommand::Logs { id } => {
             get_service(client, url, &id)?;
-            print!("{}", package_logs(client, url, &id)?);
+            print_logs(&package_logs(client, url, &id)?);
         }
     }
     Ok(())
@@ -873,6 +973,158 @@ fn state_label(value: &Value) -> &'static str {
         "yes"
     } else {
         "no"
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+fn color_enabled(stream: OutputStream) -> bool {
+    let mode = COLOR_MODE.load(Ordering::Relaxed);
+    if mode == ColorMode::Always as u8 {
+        return true;
+    }
+    if mode == ColorMode::Never as u8 || std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    match stream {
+        OutputStream::Stdout => std::io::stdout().is_terminal(),
+        OutputStream::Stderr => std::io::stderr().is_terminal(),
+    }
+}
+
+fn paint_stream(value: &str, code: &str, stream: OutputStream) -> String {
+    if color_enabled(stream) {
+        format!("\x1b[{code}m{value}\x1b[0m")
+    } else {
+        value.to_owned()
+    }
+}
+
+fn paint(value: &str, code: &str) -> String {
+    paint_stream(value, code, OutputStream::Stdout)
+}
+
+fn state_cell(value: &str) -> String {
+    let padded = format!("{value:<10}");
+    if value == "yes" {
+        paint(&padded, "32")
+    } else {
+        paint(&padded, "2")
+    }
+}
+
+fn print_json(value: &Value) -> Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
+    println!("{}", colorize_json(&json));
+    Ok(())
+}
+
+fn colorize_json(json: &str) -> String {
+    let chars = json.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(json.len() + json.len() / 4);
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            '"' => {
+                let start = index;
+                index += 1;
+                while index < chars.len() {
+                    if chars[index] == '\\' {
+                        index = (index + 2).min(chars.len());
+                    } else if chars[index] == '"' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+                let token = chars[start..index].iter().collect::<String>();
+                let mut next = index;
+                while next < chars.len() && chars[next].is_whitespace() {
+                    next += 1;
+                }
+                let color = if next < chars.len() && chars[next] == ':' {
+                    "36"
+                } else {
+                    "32"
+                };
+                output.push_str(&paint(&token, color));
+            }
+            character @ (':' | ',' | '{' | '}' | '[' | ']') => {
+                output.push_str(&paint(&character.to_string(), "2"));
+                index += 1;
+            }
+            character if character.is_whitespace() => {
+                output.push(character);
+                index += 1;
+            }
+            _ => {
+                let start = index;
+                while index < chars.len()
+                    && !chars[index].is_whitespace()
+                    && !matches!(chars[index], ',' | ':' | '{' | '}' | '[' | ']')
+                {
+                    index += 1;
+                }
+                let token = chars[start..index].iter().collect::<String>();
+                let color = if matches!(token.as_str(), "true" | "false" | "null") {
+                    "35"
+                } else {
+                    "33"
+                };
+                output.push_str(&paint(&token, color));
+            }
+        }
+    }
+    output
+}
+
+fn print_logs(logs: &str) {
+    for line in logs.lines() {
+        let clean = line
+            .chars()
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect::<String>();
+        match log_color(&clean) {
+            Some(color) => println!("{}", paint(&clean, color)),
+            None => println!("{clean}"),
+        }
+    }
+}
+
+fn log_color(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("error")
+        || [" error", "[error]", "level=error", "fatal", "panic"]
+            .iter()
+            .any(|tag| lower.contains(tag))
+    {
+        Some("31")
+    } else if lower.starts_with("warn")
+        || [" warn", "[warn]", "level=warn", "warning"]
+            .iter()
+            .any(|tag| lower.contains(tag))
+    {
+        Some("33")
+    } else if lower.starts_with("debug")
+        || [" debug", "[debug]"].iter().any(|tag| lower.contains(tag))
+    {
+        Some("2")
+    } else if lower.starts_with("info") || [" info", "[info]"].iter().any(|tag| lower.contains(tag))
+    {
+        Some("36")
+    } else {
+        None
     }
 }
 
@@ -945,7 +1197,7 @@ mod tests {
             Some("https://registry.example/index.json")
         );
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Command::Registry {
                 command: RegistryCommand::Search { query, json: false }
             } if query == "audio"
@@ -953,7 +1205,7 @@ mod tests {
 
         let cli = Cli::try_parse_from(["byam", "registry", "install", "nano", "8.0"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Command::Registry {
                 command: RegistryCommand::Pull { id, version: Some(version), json: false }
             } if id == "nano" && version == "8.0"
@@ -961,14 +1213,14 @@ mod tests {
 
         let cli = Cli::try_parse_from(["byam", "registry", "pull", "nano"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Command::Registry {
                 command: RegistryCommand::Pull { id, version: None, json: false }
             } if id == "nano"
         ));
 
         let cli = Cli::try_parse_from(["byam", "list", "--json"]).unwrap();
-        assert!(matches!(cli.command, Command::List { json: true }));
+        assert!(matches!(cli.command.unwrap(), Command::List { json: true }));
     }
 
     #[test]
@@ -976,5 +1228,23 @@ mod tests {
         assert_eq!(state_label(&Value::Bool(true)), "yes");
         assert_eq!(state_label(&Value::Bool(false)), "no");
         assert_eq!(state_label(&Value::Null), "no");
+    }
+
+    #[test]
+    fn version_flag_is_available_as_short_and_long_option() {
+        for flag in ["-v", "--version"] {
+            let cli = Cli::try_parse_from(["byam", flag]).unwrap();
+            assert!(cli.show_version, "{flag} should enable version output");
+            assert!(cli.command.is_none());
+        }
+    }
+
+    #[test]
+    fn log_levels_are_detected_case_insensitively() {
+        assert_eq!(log_color("ERROR request failed"), Some("31"));
+        assert_eq!(log_color("[WARN] retrying"), Some("33"));
+        assert_eq!(log_color("DEBUG request details"), Some("2"));
+        assert_eq!(log_color("[INFO] started"), Some("36"));
+        assert_eq!(log_color("plain output"), None);
     }
 }
