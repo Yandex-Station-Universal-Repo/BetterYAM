@@ -44,14 +44,15 @@ Platform Tools (`adb`) и доступная по ADB колонка. Если �
 CLI обращается к `http://<колонка>:8099`; адрес можно переопределить `YAM_URL`.
 По умолчанию daemon выбирает активный LAN IPv4-адрес и слушает порт `8099`.
 Задайте `--listen IP:PORT`, чтобы выбрать конкретный интерфейс или порт.
-Каталог сборки — root `manifest.json`. Запустите
-`sh tools/build-daemons.sh`; скрипт собирает все перечисленные устройства и
-создаёт `dist/manifest.json`, daemon assets в `dist/assets/` и `dist/SHA256SUMS`
-для всех файлов в `dist/assets/`. CLI release assets, которые собираются
-отдельно, также нужно положить в `dist/assets/` перед сборкой, чтобы их
-checksum вошёл в общий файл. Загрузите manifest, `SHA256SUMS` и все assets как
-release assets. Неизвестная модель не сопоставляется с похожим устройством:
-установка завершается с ошибкой.
+Каталог сборки — root `manifest.json`. `sh tools/build-daemons.sh` собирает все
+перечисленные устройства; необязательный третий аргумент ограничивает сборку
+одним ID устройства, например
+`sh tools/build-daemons.sh manifest.json dist yandexmini`. Релизные daemon
+бинарники автоматически собираются с удалёнными symbol/debug данными. Скрипт
+создаёт `dist/manifest.json`, assets в `dist/assets/` и `dist/SHA256SUMS`.
+Для полного GitHub Release добавьте CLI assets, которые собираются отдельно,
+и обновите общий `SHA256SUMS`. Неизвестная модель не сопоставляется с похожим
+устройством: установка завершается с ошибкой.
 
 ## YAM API и capability profile
 

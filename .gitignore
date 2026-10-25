@@ -1,6 +1,9 @@
 /target/
 /dist/
 /data/
+/tools/deploy-local.sh
+/tools/publish-device.sh
+/tools/publish-all.sh
 *.yap
 *.log
 .DS_Store

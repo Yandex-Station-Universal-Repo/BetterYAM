@@ -38,9 +38,14 @@ if not target_dir.is_absolute():
 assets_dir = dist_dir / "assets"
 assets_dir.mkdir(parents=True, exist_ok=True)
 release_devices = []
+requested_device = sys.argv[4] if len(sys.argv) > 4 else None
+matched_requested_device = False
 
 for entry in manifest["devices"]:
     device = entry["device"]
+    if requested_device and device != requested_device:
+        continue
+    matched_requested_device = True
     target = entry["target"]
     binary = entry["binary"]
     asset = entry["asset"]
@@ -59,6 +64,8 @@ for entry in manifest["devices"]:
         "cargo", "build", "--release", "--target", target,
         "--manifest-path", str(cargo_manifest), "--bin", binary,
     ]
+    build_env = os.environ.copy()
+    build_env["CARGO_PROFILE_RELEASE_STRIP"] = "symbols"
     if os.environ.get("BUILD_WITH_DOCKER") == "1":
         image_target = target.replace("-unknown-linux-", "-")
         docker_manifest = Path("/home/rust/src") / cargo_manifest.relative_to(root)
@@ -66,14 +73,23 @@ for entry in manifest["devices"]:
             "docker", "run", "--rm",
             "-v", f"{root}:/home/rust/src",
             "-w", "/home/rust/src",
+            "-e", "CARGO_PROFILE_RELEASE_STRIP=symbols",
             f"messense/rust-musl-cross:{image_target}",
             "cargo", "build", "--release", "--target", target,
             "--manifest-path", str(docker_manifest), "--bin", binary,
         ]
     else:
+        if target == "armv7-unknown-linux-musleabihf":
+            compiler = "arm-linux-musleabihf-gcc"
+            if shutil.which(compiler):
+                build_env.setdefault("CC_armv7_unknown_linux_musleabihf", compiler)
+                build_env.setdefault(
+                    "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER",
+                    compiler,
+                )
         command = cargo_command
     print(f"Building {device}: {' '.join(command)}", flush=True)
-    subprocess.run(command, cwd=root, check=True)
+    subprocess.run(command, cwd=root, check=True, env=build_env)
 
     built_binary = target_dir / target / "release" / binary
     if not built_binary.is_file():
@@ -90,6 +106,9 @@ for entry in manifest["devices"]:
         "filepath": str(destination.relative_to(dist_dir)),
         "sha256sum": digest,
     })
+
+if requested_device and not matched_requested_device:
+    raise SystemExit(f"device not found in manifest: {requested_device}")
 
 (dist_dir / "manifest.json").write_text(
     json.dumps({"schema_version": 1, "devices": release_devices}, indent=2) + "\n"
