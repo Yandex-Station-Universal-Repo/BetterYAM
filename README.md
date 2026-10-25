@@ -91,13 +91,13 @@ BetterYAM — самостоятельный форк/runtime, а не офиц�
 Станцию:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh
 ```
 
 Для конкретной версии передайте версию первым аргументом:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/install.sh | sh -s -- 0.1.18
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh -s -- 0.1.18
 ```
 
 ### Windows
@@ -105,7 +105,7 @@ curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/Bette
 Запустите PowerShell от имени пользователя, у которого установлен `adb`:
 
 ```powershell
-irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/install.ps1 | iex
+irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.ps1 | iex
 ```
 
 ### После установки
