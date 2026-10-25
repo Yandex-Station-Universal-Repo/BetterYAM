@@ -14,13 +14,13 @@ Run `sh tools/build-daemons.sh` with the AArch64 musl target toolchain installed
 On Linux or macOS, connect the station with ADB, then run the installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh
 ```
 
 To install a specific release, pass its version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/main/install.sh | sh -s -- 0.1.14
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- 0.1.14
 ```
 
 Alternatively, from a local repository clone run `sh install.sh` (or
