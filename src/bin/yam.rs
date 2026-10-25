@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
 use std::process::Command as ProcessCommand;
-use std::{fs, path::PathBuf};
+use std::{fs, path::Path, path::PathBuf};
 
 const DEFAULT_REGISTRY_INDEX: &str =
     "https://raw.githubusercontent.com/nyakokitsu/yapkg/registry/index.json";
@@ -11,9 +11,14 @@ const DEFAULT_REGISTRY_INDEX: &str =
 #[derive(Parser)]
 #[command(name = "byam", about = "BetterYAM package manager")]
 struct Cli {
-    #[arg(long, env = "YAM_URL", default_value = "http://127.0.0.1:8099")]
+    #[arg(
+        long,
+        env = "YAM_URL",
+        default_value = "http://127.0.0.1:8099",
+        global = true
+    )]
     url: String,
-    #[arg(long, env = "YAM_REGISTRY_URL")]
+    #[arg(long, env = "YAM_REGISTRY_URL", global = true)]
     registry: Option<String>,
     #[command(subcommand)]
     command: Command,
@@ -22,11 +27,20 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Install {
+        /// Local .yap/.pkg archive, or registry package ID.
         package: PathBuf,
-        /// Version in the registry. When provided, package is treated as its registry ID.
+        /// Registry version. When provided, package is treated as a registry ID.
         version: Option<String>,
+        /// Print the server response as JSON instead of a confirmation.
+        #[arg(long)]
+        json: bool,
     },
-    List,
+    /// List installed packages and their status.
+    List {
+        /// Print raw package data as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     Ps,
     Enable {
         id: String,
@@ -64,6 +78,7 @@ enum Command {
     Inspect {
         id: String,
     },
+    /// Browse and install packages from a package registry.
     Registry {
         #[command(subcommand)]
         command: RegistryCommand,
@@ -87,8 +102,29 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RegistryCommand {
-    List,
-    Pull { id: String, version: Option<String> },
+    /// Browse the registry, optionally filtering by ID, name, or description.
+    List {
+        query: Option<String>,
+        /// Print raw registry entries as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search registry packages by ID, name, or description.
+    Search {
+        query: String,
+        /// Print raw matching registry entries as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a package from the registry.
+    #[command(name = "install", alias = "pull")]
+    Pull {
+        id: String,
+        version: Option<String>,
+        /// Print the server response as JSON instead of a confirmation.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -128,10 +164,24 @@ enum ClockCommand {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = Client::new();
+    let client = Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
     match cli.command {
-        Command::Install { package, version } => {
-            if version.is_some() || !package.is_file() {
+        Command::Install {
+            package,
+            version,
+            json,
+        } => {
+            let local_archive = package.is_file();
+            if local_archive && version.is_some() {
+                bail!("a version can only be specified when installing a registry package ID")
+            }
+            if !local_archive && looks_like_local_archive(&package) {
+                bail!("local package archive not found: {}", package.display())
+            }
+            if !local_archive {
                 let id = package
                     .to_str()
                     .context("registry package ID must be valid UTF-8")?;
@@ -141,6 +191,7 @@ fn main() -> Result<()> {
                     cli.registry.as_deref().unwrap_or(DEFAULT_REGISTRY_INDEX),
                     id,
                     version.as_deref(),
+                    json,
                 )?;
             } else {
                 let file = fs::File::open(&package)
@@ -155,14 +206,18 @@ fn main() -> Result<()> {
                 let response = client
                     .post(endpoint(&cli.url, "/api/plugins"))
                     .multipart(multipart::Form::new().part("package", part))
-                    .send()?;
-                print_response(response)?;
+                    .send()
+                    .with_context(|| format!("upload package archive {}", package.display()))?;
+                print_install_response(response, json, "local archive")?;
             }
         }
-        Command::List => {
-            let packages: Value =
-                json_response(client.get(endpoint(&cli.url, "/api/plugins")).send()?)?;
-            println!("{}", serde_json::to_string_pretty(&packages)?);
+        Command::List { json } => {
+            let packages = list_packages(&client, &cli.url)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&packages)?);
+            } else {
+                print_installed_packages(&packages)?;
+            }
         }
         Command::Ps => {
             let packages: Value =
@@ -229,17 +284,22 @@ fn main() -> Result<()> {
                 .registry
                 .unwrap_or_else(|| DEFAULT_REGISTRY_INDEX.into());
             match command {
-                RegistryCommand::List => {
+                RegistryCommand::List { query, json } => {
                     let packages = registry_packages(&client, &registry)?;
-                    println!("{}", serde_json::to_string_pretty(&packages)?);
+                    print_registry_packages(&packages, query.as_deref(), json)?;
                 }
-                RegistryCommand::Pull { id, version } => {
+                RegistryCommand::Search { query, json } => {
+                    let packages = registry_packages(&client, &registry)?;
+                    print_registry_packages(&packages, Some(&query), json)?;
+                }
+                RegistryCommand::Pull { id, version, json } => {
                     install_registry_package(
                         &client,
                         &cli.url,
                         &registry,
                         &id,
                         version.as_deref(),
+                        json,
                     )?;
                 }
             }
@@ -391,7 +451,7 @@ fn adb_station() -> Result<String> {
     let output = ProcessCommand::new("adb")
         .arg("devices")
         .output()
-        .context("adb is required for yam tui")?;
+        .context("adb is required for byam tui")?;
     let devices = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
@@ -413,12 +473,139 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn looks_like_local_archive(package: &Path) -> bool {
+    package.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("yap") || extension.eq_ignore_ascii_case("pkg")
+    }) || package.components().count() > 1
+}
+
+fn print_installed_packages(packages: &Value) -> Result<()> {
+    let packages = packages
+        .as_array()
+        .context("invalid package list from BetterYAMd")?;
+    if packages.is_empty() {
+        println!("No packages installed. Browse available packages with `byam registry list`.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<22} {:<24} {:<10} {:<8} {:<8} {:<8} {:<11} NAME",
+        "ID", "VERSION", "KIND", "MODE", "ENABLED", "RUNNING", "COMPATIBLE"
+    );
+    let mut rows = packages.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|package| package["manifest"]["id"].as_str().unwrap_or("").to_owned());
+    for package in rows {
+        let manifest = &package["manifest"];
+        let id = table_cell(manifest["id"].as_str().unwrap_or("<unknown>"), 22);
+        let version = table_cell(manifest["version"].as_str().unwrap_or("-"), 24);
+        let kind = manifest["launch"]["kind"].as_str().unwrap_or("lua");
+        let mode = manifest["launch"]["mode"].as_str().unwrap_or("oneshot");
+        let enabled = state_label(&package["enabled"]);
+        let running = state_label(&package["running"]);
+        let compatible = state_label(&package["compatible"]);
+        let name = table_cell(manifest["name"].as_str().unwrap_or("<unknown>"), usize::MAX);
+        println!(
+            "{id:<22} {version:<24} {kind:<10} {mode:<8} {enabled:<8} {running:<8} {compatible:<11} {name}"
+        );
+    }
+    Ok(())
+}
+
+fn print_registry_packages(packages: &Value, query: Option<&str>, json: bool) -> Result<()> {
+    let packages = packages
+        .as_array()
+        .context("invalid registry package list")?;
+    let query = query.map(str::to_lowercase);
+    let mut matching = filter_registry_packages(packages, query.as_deref());
+    matching.sort_by(|left, right| {
+        left["id"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["id"].as_str().unwrap_or(""))
+            .then_with(|| {
+                left["version"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(right["version"].as_str().unwrap_or(""))
+            })
+    });
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&matching)?);
+        return Ok(());
+    }
+    if matching.is_empty() {
+        match query {
+            Some(query) => println!("No registry packages match '{query}'."),
+            None => println!("The package registry is empty."),
+        }
+        return Ok(());
+    }
+
+    println!("{:<22} {:<14} {:<24} DESCRIPTION", "ID", "VERSION", "NAME");
+    for package in &matching {
+        let id = table_cell(package["id"].as_str().unwrap_or("<unknown>"), 22);
+        let version = table_cell(package["version"].as_str().unwrap_or("-"), 14);
+        let name = table_cell(
+            package["name"]
+                .as_str()
+                .unwrap_or_else(|| package["id"].as_str().unwrap_or("<unknown>")),
+            24,
+        );
+        let description = table_cell(package["description"].as_str().unwrap_or(""), usize::MAX);
+        println!("{id:<22} {version:<14} {name:<24} {description}");
+    }
+    println!("\n{} package version(s)", matching.len());
+    Ok(())
+}
+
+fn filter_registry_packages<'a>(packages: &'a [Value], query: Option<&str>) -> Vec<&'a Value> {
+    let query = query.map(str::to_lowercase);
+    packages
+        .iter()
+        .filter(|package| {
+            let Some(query) = query.as_deref() else {
+                return true;
+            };
+            ["id", "name", "description"].iter().any(|field| {
+                package[*field]
+                    .as_str()
+                    .is_some_and(|value| value.to_lowercase().contains(query))
+            })
+        })
+        .collect()
+}
+
+fn table_cell(value: &str, max_chars: usize) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if sanitized.chars().count() <= max_chars {
+        sanitized
+    } else if max_chars <= 1 {
+        "…".chars().take(max_chars).collect()
+    } else {
+        format!(
+            "{}…",
+            sanitized.chars().take(max_chars - 1).collect::<String>()
+        )
+    }
+}
+
 fn install_registry_package(
     client: &Client,
     yam_url: &str,
     registry: &str,
     id: &str,
     version: Option<&str>,
+    json: bool,
 ) -> Result<()> {
     let daemon_response = client
         .post(endpoint(yam_url, "/api/plugins/registry"))
@@ -427,25 +614,57 @@ fn install_registry_package(
             "version": version,
             "registry": registry,
         }))
-        .send()?;
-    if daemon_response.status().is_success() {
-        return print_response(daemon_response);
-    }
+        .send()
+        .with_context(|| format!("contact BetterYAMd at {yam_url}"))?;
     let status = daemon_response.status();
     let message = daemon_response.text()?;
+    if status.is_success() {
+        return print_install_response_text(&message, json, "registry");
+    }
     if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
     {
         bail!("BetterYAMd does not support registry downloads; update it with the BetterYAM installer")
     }
-    bail!("BetterYAMd registry download failed ({status}): {message}")
+    let requested = version.map_or_else(|| id.to_owned(), |version| format!("{id}@{version}"));
+    bail!(
+        "failed to install {requested} from registry ({status}): {}",
+        message.trim()
+    )
+}
+
+fn print_install_response(
+    response: reqwest::blocking::Response,
+    json: bool,
+    source: &str,
+) -> Result<()> {
+    let status = response.status();
+    let body = response.text()?;
+    if !status.is_success() {
+        bail!("package installation failed ({status}): {}", body.trim())
+    }
+    print_install_response_text(&body, json, source)
+}
+
+fn print_install_response_text(body: &str, json: bool, source: &str) -> Result<()> {
+    if json {
+        if !body.trim().is_empty() {
+            let value: Value = serde_json::from_str(body)
+                .context("BetterYAMd returned an invalid JSON install response")?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+    } else if let Ok(manifest) = serde_json::from_str::<Value>(body) {
+        let id = manifest["id"].as_str().unwrap_or("<unknown>");
+        let name = manifest["name"].as_str().unwrap_or(id);
+        let version = manifest["version"].as_str().unwrap_or("");
+        println!("Installed {name} ({id} {version}) from {source}.");
+    } else if !body.trim().is_empty() {
+        println!("{}", body.trim());
+    }
+    Ok(())
 }
 
 fn registry_packages(client: &Client, registry: &str) -> Result<Value> {
-    let index_url = if registry.trim_end_matches('/').ends_with("index.json") {
-        registry.to_string()
-    } else {
-        endpoint(registry, "/index.json")
-    };
+    let index_url = registry_index_url(registry);
     let response = client.get(&index_url).send()?;
     if response.status().is_success() {
         let index: Value = response.json()?;
@@ -458,8 +677,28 @@ fn registry_packages(client: &Client, registry: &str) -> Result<Value> {
     if response.status() != reqwest::StatusCode::NOT_FOUND {
         return Err(response.error_for_status().unwrap_err().into());
     }
-    let packages = json_response(client.get(endpoint(registry, "/api/packages")).send()?)?;
-    Ok(packages)
+    let response = json_response(client.get(registry_api_url(registry)).send()?)?;
+    if let Some(packages) = response.as_array() {
+        return Ok(Value::Array(packages.clone()));
+    }
+    let packages = response["packages"]
+        .as_array()
+        .context("invalid registry API response: expected a packages array")?;
+    Ok(Value::Array(packages.clone()))
+}
+
+fn registry_index_url(registry: &str) -> String {
+    if registry.trim_end_matches('/').ends_with("index.json") {
+        registry.to_owned()
+    } else {
+        endpoint(registry, "/index.json")
+    }
+}
+
+fn registry_api_url(registry: &str) -> String {
+    let base = registry.trim_end_matches('/');
+    let base = base.strip_suffix("/index.json").unwrap_or(base);
+    endpoint(base, "/api/packages")
 }
 
 fn endpoint(base: &str, path: &str) -> String {
@@ -547,7 +786,7 @@ fn service_command(client: &Client, url: &str, command: ServiceCommand) -> Resul
         ServiceCommand::Start { id } => {
             let package = get_service(client, url, &id)?;
             if package["enabled"] != true {
-                bail!("service is disabled; run `yam service enable {id}` first")
+                bail!("service is disabled; run `byam service enable {id}` first")
             }
             if package["running"] != true {
                 start_service(client, url, &id)?;
@@ -562,7 +801,7 @@ fn service_command(client: &Client, url: &str, command: ServiceCommand) -> Resul
         ServiceCommand::Restart { id } => {
             let package = get_service(client, url, &id)?;
             if package["enabled"] != true {
-                bail!("service is disabled; run `yam service enable {id}` first")
+                bail!("service is disabled; run `byam service enable {id}` first")
             }
             stop_service(client, url, &id)?;
             start_service(client, url, &id)?;
@@ -640,6 +879,97 @@ fn state_label(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_distinguishes_registry_ids_from_missing_local_archives() {
+        assert!(!looks_like_local_archive(Path::new("nano")));
+        assert!(looks_like_local_archive(Path::new("package.yap")));
+        assert!(looks_like_local_archive(Path::new("package.PKG")));
+        assert!(looks_like_local_archive(Path::new("./packages/nano")));
+    }
+
+    #[test]
+    fn registry_urls_accept_base_or_index_url() {
+        assert_eq!(
+            registry_index_url("https://registry.example"),
+            "https://registry.example/index.json"
+        );
+        assert_eq!(
+            registry_index_url("https://registry.example/index.json"),
+            "https://registry.example/index.json"
+        );
+        assert_eq!(
+            registry_api_url("https://registry.example/index.json"),
+            "https://registry.example/api/packages"
+        );
+    }
+
+    #[test]
+    fn registry_search_matches_id_name_and_description_case_insensitively() {
+        let packages = vec![
+            serde_json::json!({"id":"media-tool","name":"Player","description":"Audio support"}),
+            serde_json::json!({"id":"network","name":"Net helper","description":"Utilities"}),
+        ];
+        assert_eq!(filter_registry_packages(&packages, Some("AUDIO")).len(), 1);
+        assert_eq!(
+            filter_registry_packages(&packages, Some("PLAYER"))[0]["id"],
+            "media-tool"
+        );
+        assert_eq!(
+            filter_registry_packages(&packages, Some("missing")).len(),
+            0
+        );
+        assert_eq!(filter_registry_packages(&packages, None).len(), 2);
+    }
+
+    #[test]
+    fn table_cells_sanitize_control_characters_and_truncate() {
+        assert_eq!(table_cell("hello\nworld", 20), "hello world");
+        assert_eq!(table_cell("abcdef", 4), "abc…");
+        assert_eq!(table_cell("ééé", 2), "é…");
+    }
+
+    #[test]
+    fn registry_commands_accept_search_and_global_options_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "byam",
+            "registry",
+            "search",
+            "audio",
+            "--registry",
+            "https://registry.example/index.json",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.registry.as_deref(),
+            Some("https://registry.example/index.json")
+        );
+        assert!(matches!(
+            cli.command,
+            Command::Registry {
+                command: RegistryCommand::Search { query, json: false }
+            } if query == "audio"
+        ));
+
+        let cli = Cli::try_parse_from(["byam", "registry", "install", "nano", "8.0"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Registry {
+                command: RegistryCommand::Pull { id, version: Some(version), json: false }
+            } if id == "nano" && version == "8.0"
+        ));
+
+        let cli = Cli::try_parse_from(["byam", "registry", "pull", "nano"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Registry {
+                command: RegistryCommand::Pull { id, version: None, json: false }
+            } if id == "nano"
+        ));
+
+        let cli = Cli::try_parse_from(["byam", "list", "--json"]).unwrap();
+        assert!(matches!(cli.command, Command::List { json: true }));
+    }
 
     #[test]
     fn service_state_labels_are_human_readable() {

@@ -3,6 +3,7 @@ mod audio;
 mod bluetooth;
 mod captive;
 mod input;
+mod ipc;
 mod led;
 mod sensors;
 mod volume;
@@ -50,6 +51,32 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long)]
     model: Option<String>,
+}
+fn validate_ipc_policy(m: &Manifest) -> Result<()> {
+    let has_raw_ipc = m
+        .permissions
+        .iter()
+        .any(|permission| matches!(permission.as_str(), "ipc.read" | "ipc.control"));
+    if m.ipc.services.is_empty() {
+        if has_raw_ipc {
+            bail!("ipc.read and ipc.control require a non-empty [ipc].services list")
+        }
+        return Ok(());
+    }
+    if !has_raw_ipc {
+        bail!("[ipc].services requires ipc.read or ipc.control permission")
+    }
+    if m.ipc.services.len() > 16 {
+        bail!("[ipc].services lists more than 16 services")
+    }
+    let mut unique = HashSet::new();
+    for service in &m.ipc.services {
+        ipc::validate_service(service)?;
+        if !unique.insert(service) {
+            bail!("[ipc].services contains a duplicate service")
+        }
+    }
+    Ok(())
 }
 async fn logo_set(State(a): State<App>, Json(frame): Json<Frame>) -> Result<StatusCode, ApiError> {
     a.led.draw(frame.colors).await.map_err(ApiError::backend)?;
@@ -118,6 +145,8 @@ struct Manifest {
     #[serde(default)]
     input: InputPolicy,
     #[serde(default)]
+    ipc: IpcPolicy,
+    #[serde(default)]
     compatibility: Compatibility,
     #[serde(default)]
     launch: Launch,
@@ -135,6 +164,11 @@ struct NetworkPolicy {
 struct InputPolicy {
     #[serde(default)]
     devices: Vec<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct IpcPolicy {
+    #[serde(default)]
+    services: Vec<String>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Launch {
@@ -352,6 +386,7 @@ impl PluginManager {
             bail!("binary packages require the exec permission")
         }
         validate_input_policy(&m)?;
+        validate_ipc_policy(&m)?;
         if m.launch.kind == LaunchKind::Binary {
             let executable = stage.join(m.launch.path(&m));
             if !executable.is_file() {
@@ -1403,7 +1438,11 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
             )?;
             api.set("http", http)?;
         }
-        if permissions.contains("ipc.alarm") || permissions.contains("ipc.speech") {
+        if permissions.contains("ipc.alarm")
+            || permissions.contains("ipc.speech")
+            || permissions.contains("ipc.read")
+            || permissions.contains("ipc.control")
+        {
             let ipc = lua.create_table()?;
             if permissions.contains("ipc.alarm") {
                 let alarm = lua.create_table()?;
@@ -1459,6 +1498,66 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                             lua.to_value(&value)
                         }
                     })?,
+                )?;
+            }
+            if permissions.contains("ipc.read") || permissions.contains("ipc.control") {
+                if manifest.ipc.services.is_empty() {
+                    bail!("ipc.read and ipc.control require a non-empty [ipc].services list")
+                }
+            }
+            if permissions.contains("ipc.read") {
+                let read_services = manifest.ipc.services.clone();
+                let ipc_cancelled = cancelled.clone();
+                ipc.set(
+                    "next",
+                    lua.create_function(move |lua, (service, timeout_ms): (String, u64)| {
+                        ipc::service_allowed(&read_services, &service)
+                            .and_then(|_| ipc::receive(&service, timeout_ms, &ipc_cancelled))
+                            .map_err(mlua::Error::external)?
+                            .map(|payload| lua.create_string(&payload))
+                            .transpose()?
+                            .map(mlua::Value::String)
+                            .map_or(Ok(mlua::Value::Nil), Ok)
+                    })?,
+                )?;
+            }
+            if permissions.contains("ipc.control") {
+                let control_services = manifest.ipc.services.clone();
+                let ipc_cancelled = cancelled.clone();
+                ipc.set(
+                    "send",
+                    lua.create_function(move |_, (service, payload): (String, mlua::String)| {
+                        ipc::service_allowed(&control_services, &service)
+                            .and_then(|_| {
+                                ipc::send(&service, payload.as_bytes().as_ref(), &ipc_cancelled)
+                            })
+                            .map_err(mlua::Error::external)
+                    })?,
+                )?;
+            }
+            if permissions.contains("ipc.read") && permissions.contains("ipc.control") {
+                let request_services = manifest.ipc.services.clone();
+                let ipc_cancelled = cancelled.clone();
+                ipc.set(
+                    "request",
+                    lua.create_function(
+                        move |lua, (service, payload, timeout_ms): (String, mlua::String, u64)| {
+                            ipc::service_allowed(&request_services, &service)
+                                .and_then(|_| {
+                                    ipc::request(
+                                        &service,
+                                        payload.as_bytes().as_ref(),
+                                        timeout_ms,
+                                        &ipc_cancelled,
+                                    )
+                                })
+                                .map_err(mlua::Error::external)?
+                                .map(|response| lua.create_string(&response))
+                                .transpose()?
+                                .map(mlua::Value::String)
+                                .map_or(Ok(mlua::Value::Nil), Ok)
+                        },
+                    )?,
                 )?;
             }
             api.set("ipc", ipc)?;
@@ -2789,6 +2888,24 @@ mod tests {
         .unwrap();
         assert!(validate_input_policy(&manifest).is_ok());
         assert_eq!(input_scope(&manifest).unwrap(), &["mute"]);
+    }
+
+    #[test]
+    fn ipc_permissions_require_an_explicit_valid_service_allowlist() {
+        let manifest = |permissions: &str, services: &str| {
+            toml::from_str::<Manifest>(&format!(
+                "id='p'\nname='p'\nversion='1'\nentry='main.lua'\npermissions={permissions}\n[ipc]\nservices={services}\n"
+            ))
+            .unwrap()
+        };
+
+        assert!(
+            validate_ipc_policy(&manifest("['ipc.read', 'ipc.control']", "['mediad']")).is_ok()
+        );
+        assert!(validate_ipc_policy(&manifest("['ipc.read']", "[]")).is_err());
+        assert!(validate_ipc_policy(&manifest("[]", "['mediad']")).is_err());
+        assert!(validate_ipc_policy(&manifest("['ipc.control']", "['mediad', 'mediad']")).is_err());
+        assert!(validate_ipc_policy(&manifest("['ipc.read']", "['MediaD']")).is_err());
     }
 
     #[test]

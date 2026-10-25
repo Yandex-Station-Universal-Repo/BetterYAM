@@ -12,16 +12,34 @@
 BetterYAMd в `/data/quazar/betteryam`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh
 ```
 
 Windows:
 
 ```powershell
-irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.ps1 | iex
 ```
 
-Для конкретной версии передайте её первым аргументом (`sh -s -- 0.1.13`). Удаление на Unix: `sh -s -- --uninstall`.
+Unix-установщик поддерживает Linux x86_64 и macOS Apple Silicon. Он загружает
+последний релиз по умолчанию; для конкретной версии передайте её первым
+аргументом, например `sh -s -- 0.1.17`. CLI устанавливается в
+`~/.local/bin/byam`; `yam` создаётся как совместимый alias. Если каталог не
+включён в `PATH`, запускайте CLI по полному пути или добавьте `~/.local/bin` в
+`PATH`.
+
+Основная команда CLI — `byam`; Windows-установщик добавляет `byam.cmd` и
+совместимый `yam.cmd` в пользовательский `PATH`. Для удаления Unix-установки
+из клона репозитория выполните `sh install.sh --uninstall`; при запуске из
+сети передайте `--uninstall` через stdin:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- --uninstall
+```
+
+Удаление также удаляет daemon с выбранной колонки. Установщикам нужны Android
+Platform Tools (`adb`) и доступная по ADB колонка. Если подключено несколько
+поддерживаемых устройств, можно выбрать нужное в интерактивном списке.
 
 CLI обращается к `http://<колонка>:8099`; адрес можно переопределить `YAM_URL`.
 По умолчанию daemon выбирает активный LAN IPv4-адрес и слушает порт `8099`.

@@ -6,26 +6,49 @@ Each supported station model owns its API server, Web Panel, and hardware
 implementation in its device directory. The first device package is
 [`yandexmini/`](./yandexmini/).
 
-Device builds are listed in [`manifest.json`](./manifest.json).
-Run `sh tools/build-daemons.sh` with the AArch64 musl target toolchain installed
-(or `BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh`) to build every manifest entry and generate `dist/manifest.json` and
-`dist/SHA256SUMS`. Release `manifest.json` and each generated daemon asset.
-Pushing a `v*` tag runs the release workflow, which builds the CLI and device
-daemons, generates checksums, and publishes the installer assets. The tag
-version should match the version in `Cargo.toml`.
+Device builds are listed in [`manifest.json`](./manifest.json). Run
+`sh tools/build-daemons.sh` with the AArch64 musl target toolchain installed (or
+`BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh`) to build every manifest entry
+and generate `dist/manifest.json` and `dist/SHA256SUMS`.
+
+Pushing a `v*` tag runs the release workflow. It builds the CLI for Linux
+x86_64, macOS Apple Silicon and Windows x86_64, builds the device daemons,
+generates checksums, and publishes all release assets. The tag version should
+match the version in `Cargo.toml`.
+
 ## Installing on a station
 
-On Linux or macOS, connect the station with ADB, then run the installer:
+On Linux x86_64 or macOS Apple Silicon, install Android Platform Tools and
+connect the station with ADB, then run the installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh
 ```
 
-The installed CLI command is `byam` (`yam` remains as a compatibility alias):
+On Windows, run PowerShell as a user with ADB installed and use:
+
+```powershell
+irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.ps1 | iex
+```
+
+The installer deploys the daemon supported by the connected station and
+installs the CLI on the computer. The primary CLI command is `byam`; `yam` remains available as a compatibility
+alias. On macOS and Linux, verify the installation with:
 
 ```sh
-byam --help
+~/.local/bin/byam --help
 ```
+
+On macOS and Linux the CLI is installed in `~/.local/bin`. If `byam` is not
+found, run it by its full path or add that directory to `PATH`. For zsh, for
+example:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+After updating `PATH`, run `byam --help`.
 
 To install a specific release, pass its version:
 
@@ -34,8 +57,9 @@ curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/Bette
 ```
 
 Alternatively, from a local repository clone run `sh install.sh` (or
-`sh install.sh 0.1.17`). The script requires `adb` and a connected station; if
-multiple supported stations are connected, it prompts you to select one.
+`sh install.sh 0.1.17`). The installer requires `adb`. It selects a supported
+connected station automatically, prompts when multiple stations are connected,
+or asks for the station IP if none is connected yet.
 
 The installer reads the station hostname with `adb shell uname -n`, removes a
 terminal device ID when it is a separate four-character uppercase
@@ -60,8 +84,10 @@ add its build target and exact normalized model aliases to root
 [`manifest.json`](./manifest.json), then build and publish that daemon asset
 with the release manifest and checksums. Add an alias only when that device
 can safely use the listed daemon; do not point an unsupported model at an
-existing daemon. See [deployment instructions](./docs/DEPLOYMENT.md) for the
-installer and release process.
+existing daemon. See the [device development guide](./docs/ADDING_DEVICES.md)
+for the full implementation checklist and a ready-to-use coding-agent prompt,
+and [deployment instructions](./docs/DEPLOYMENT.md) for the installer and
+release process.
 
 The Mini daemon implements its six-pixel RGB LED ring, read-only Linux input
 events when the corresponding kernel devices are accessible, and ALSA Master

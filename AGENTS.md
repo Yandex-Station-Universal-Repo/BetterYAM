@@ -4,13 +4,14 @@
 
 - `yandexmini/main.rs` builds the Yandex Mini `betteryamd` HTTP API, package manager and Lua bridge.
 - `yandexmini/led.rs` implements the Mini LED hardware adapter.
-- `src/bin/yam.rs` builds `yam`, the command-line client.
+- `src/bin/yam.rs` builds `byam`, the command-line client.
 - `yandexmini/web/index.html` is embedded in the Mini daemon.
 - `examples/` contains source trees for `.yap` packages.
 - `docs/` is the public developer documentation.
+- `docs/ADDING_DEVICES.md` guides contributors and coding agents through adding a device daemon.
 - `manifest.json` lists device daemon packages and build targets.
 - `tools/build-daemons.sh` builds all manifest entries and creates release manifest/checksums.
-- `install.sh` installs the `yam` CLI and selects the device daemon by `uname -n`.
+- `install.sh` installs `byam` (with a `yam` compatibility alias) and selects the device daemon by `uname -n`.
 - `tools/convert_apkg.py` converts an apkg repository package into `.yap`.
 
 ## Required checks

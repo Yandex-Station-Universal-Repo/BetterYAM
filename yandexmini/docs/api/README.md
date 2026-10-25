@@ -105,8 +105,11 @@
 - Bluetooth scan/pair/connect/disconnect/remove через BetterYAM API на Mini
   не реализованы; соответствующие capabilities выключены. Для их надёжной
   реализации нужен поддерживаемый BSA SDK или API device daemon.
-- Display, ambient-light control, clock и IPC на Mini не реализованы;
-  соответствующие capabilities выключены.
+- Display, ambient-light control, clock и IPC alarm/speech на Mini не
+  реализованы; соответствующие capabilities выключены. Raw Quasar IPC
+  (`alice.ipc.next`, `send`, `request`) использует локальный endpoint сервиса
+  из `quasar.cfg`; package должен объявить минимальный allowlist
+  `[ipc].services` и permissions `ipc.read` / `ipc.control`.
 - Audio capability пока означает, что `aplay` перечисляет playback-устройства.
   На протестированной прошивке короткий playback завершился ALSA ошибкой
   настройки, поэтому успешный физический вывод звука не подтверждён.

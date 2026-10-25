@@ -17,6 +17,8 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 | `network` | `alice.http.get(url)`, `post(url, body)` |
 | `ipc.alarm` | `alice.ipc.next_alarm(timeout_ms)` |
 | `ipc.speech` | `alice.ipc.next_speech(timeout_ms)` |
+| `ipc.read` | `alice.ipc.next(service, timeout_ms)` |
+| `ipc.control` | `alice.ipc.send(service, message)`; вместе с `ipc.read` — `alice.ipc.request(service, message, timeout_ms)` |
 | `system` | `alice.system.hostname()`, `uptime()`, `meminfo()` |
 | `exec` | `alice.exec(program, args)` |
 
@@ -99,3 +101,44 @@ devices = ["mute", "vad_keypad"]
 ```
 
 Функция возвращает `nil` по тайм-ауту либо `{ device, type, code, value, time_ms }`. `alice.ipc.next_alarm` и `next_speech` возвращают `nil` либо событие будильника/распознанной речи. Текст речи — персональные данные: не отправляйте его без явной необходимости и permission `network`.
+
+Raw Quasar IPC работает с бинарными protobuf `QuasarMessage`: `next` возвращает
+Lua binary string или `nil` по тайм-ауту, `send` передаёт binary string сервису,
+а `request` ждёт ответ с тем же `request_id` из protobuf field 1. Максимальный
+timeout — 60 секунд; максимальный размер одного IPC frame — 10 MiB.
+
+Разрешайте конкретные сервисы в `[ipc].services`; вызовы к другим сервисам
+отклоняются:
+
+```toml
+permissions = ["ipc.read", "ipc.control"]
+
+[ipc]
+services = ["mediad"]
+```
+
+`ipc.read` открывает только `alice.ipc.next`; `ipc.control` открывает только
+`alice.ipc.send`. `alice.ipc.request` существует только при наличии обоих
+permissions. `ipc.read` и `ipc.control` требуют непустой allowlist; максимум
+16 имён сервисов. `send` и `request` позволяют менять состояние system
+services — выдавайте `ipc.control` только доверенным пакетам и перечисляйте
+минимально необходимые сервисы. На Yandex устройствах daemon находит endpoint
+по `<service>.port` в `/system/vendor/quasar/quasar.cfg`; для настройки адреса
+можно задать `YAM_<SERVICE>_ADDR` как IPv4 loopback `host:port`.
+
+Пример приёма сообщения и отправки запроса (protobuf bytes должны быть
+сформированы вашим Lua-кодом или библиотекой protobuf):
+
+```lua
+local frame = alice.ipc.next("mediad", 1000)
+if frame then
+    -- frame is a binary Lua string, not JSON or UTF-8 text.
+end
+
+alice.ipc.send("mediad", protobuf_bytes)
+local response = alice.ipc.request(
+    "mediad",
+    request_with_request_id,
+    5000
+)
+```

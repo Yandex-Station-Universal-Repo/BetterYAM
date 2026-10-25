@@ -18,34 +18,53 @@ path = "main.lua"
 features = ["led.ring.rgb"]
 ```
 
-`oneshot` запускается через `yam run`; включённый `service` восстанавливается после перезапуска BetterYAMd. Lua-сервисы должны регулярно вызывать `alice.sleep` или `alice.set`.
+`oneshot` запускается через `byam run`; включённый `service` восстанавливается после перезапуска BetterYAMd. Lua-сервисы должны регулярно вызывать `alice.sleep` или `alice.set`.
 
-Binary-пакет требует `exec`, должен соответствовать архитектуре колонки (обычно AArch64 musl) и может задать `args`, `interpreter = "sh"` и `library_paths`. Его вывод доступен через `yam logs <id>`.
+Binary-пакет требует `exec`, должен соответствовать архитектуре колонки (обычно AArch64 musl) и может задать `args`, `interpreter = "sh"` и `library_paths`. Его вывод доступен через `byam logs <id>`.
 
 ```sh
-yam install package.yap          # локальный архив
-yam install nano                 # последняя версия из registry
-yam install nano 8.0             # конкретная версия
-yam enable nano
-yam service list
-yam service enable ambient-lights
-yam service restart ambient-lights
-yam service logs ambient-lights
-yam run nano -- --help
-yam tui nano                     # интерактивный binary oneshot через ADB
-yam stop nano
-yam rm nano
+byam list                         # установленные пакеты и их состояние
+byam list --json                  # тот же список в JSON для скриптов
+byam registry list                # каталог registry
+byam registry search audio        # поиск по ID, имени и описанию
+byam registry list audio          # тот же поиск через list
+byam install package.yap          # локальный архив
+byam install nano                 # последняя версия из registry
+byam install nano 8.0             # конкретная версия registry
+byam registry install nano 8.0    # то же через registry subcommand
+byam registry list --json         # каталог в JSON
+byam enable nano
+byam service list
+byam service enable ambient-lights
+byam service restart ambient-lights
+byam service logs ambient-lights
+byam run nano -- --help
+byam tui nano                     # интерактивный binary oneshot через ADB
+byam stop nano
+byam rm nano
 ```
 
-`yam service` управляет только пакетами с `launch.mode = "service"`:
+`byam install` принимает путь к существующему `.yap`/`.pkg` архиву или ID
+пакета из registry. Если локальный архив с таким расширением не найден, CLI
+сообщит об ошибке вместо попытки трактовать путь как registry ID. Установка
+показывает имя и версию добавленного пакета; `--json` сохраняет машинный ответ
+daemon. `byam registry pull` оставлен как alias для `byam registry install`.
+Параметры `--registry URL` и `--url URL` можно указывать до или после
+подкоманды; также поддерживаются `YAM_REGISTRY_URL` и `YAM_URL`.
+
+`byam service` управляет только пакетами с `launch.mode = "service"`:
 `enable` запускает сервис и сохраняет автозапуск, `disable` останавливает его
 и отключает автозапуск, `start` запускает включённый сервис, `stop` останавливает
 без отключения, `restart` перезапускает включённый сервис, `list` показывает
 установленные сервисы и их состояние, а `logs` выводит журнал сервиса.
-Существующие команды `yam enable`, `yam disable`, `yam stop` и `yam logs`
-сохранены для обратной совместимости.
+Прежние команды `byam enable`, `byam disable`, `byam stop` и `byam logs`
+сохранены для обратной совместимости. В установках также доступна команда
+`yam` как alias для `byam`.
 
 Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета. Hardware операции маршрутизируются через Device API текущей модели BetterYAMd.
 
-В новых установках основная команда CLI — `byam`; `yam` сохраняется как
-совместимый alias.
+Raw Quasar IPC (`alice.ipc.next`, `send`, `request`) доступен Lua-пакетам с
+permissions `ipc.read` и/или `ipc.control`. Перечислите разрешённые service
+names в `[ipc].services`; см. [Lua API](./PLUGIN_API.md#input-и-ipc) для
+ограничений и примера. Эти Lua bindings не добавляют IPC endpoints в binary
+runtime API.
