@@ -9,8 +9,33 @@ Device builds are listed in [`manifest.json`](./manifest.json).
 Run `sh tools/build-daemons.sh` with the AArch64 musl target toolchain installed
 (or `BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh`) to build every manifest entry and generate `dist/manifest.json` and
 `dist/SHA256SUMS`. Release `manifest.json` and each generated daemon asset.
-The installer uses the station's `uname -n` value to select a matching device
-record; unknown models are rejected rather than assigned another daemon.
+## Installing on a station
+
+The installer reads the station hostname with `adb shell uname -n`, removes a
+terminal device ID when it is a separate four-character uppercase
+alphanumeric segment, normalizes the remaining model name, then matches it
+against `models` in the release `manifest.json`. For example:
+
+| Hostname from `uname -n` | Model used for daemon selection |
+| --- | --- |
+| `Yandex-Station-Midi-44QK` | `Yandex-Station-Midi` |
+| `Yandex-Mini3-J3MK` | `Yandex-Mini3` |
+| `YandexStationMini_729E` | `YandexStationMini` |
+| `Yandex-Lite-gen2-JBDC` | `Yandex-Lite-gen2` |
+
+The `gen2` model suffix is retained; only the final four-character ID segment
+is removed. The Mini daemon currently lists `yandexmini`,
+`yandexstationmini`, and `yandexstationmini_c190` as model aliases. Midi,
+Mini3, and Lite Gen 2 do not have daemon entries yet, so the installer rejects
+them instead of deploying the Mini daemon.
+
+To add another station model, implement its daemon in a device directory,
+add its build target and exact normalized model aliases to root
+[`manifest.json`](./manifest.json), then build and publish that daemon asset
+with the release manifest and checksums. Add an alias only when that device
+can safely use the listed daemon; do not point an unsupported model at an
+existing daemon. See [deployment instructions](./docs/DEPLOYMENT.md) for the
+installer and release process.
 
 The Mini daemon implements its six-pixel RGB LED ring, read-only Linux input
 events when the corresponding kernel devices are accessible, and ALSA Master
