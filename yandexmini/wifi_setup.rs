@@ -26,7 +26,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,27 @@ impl Default for WifiSetupSettings {
     }
 }
 
+impl WifiSetupSettings {
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=14).contains(&self.channel) {
+            bail!("Wi-Fi setup channel must be 1..14")
+        }
+        if !self.ap_ssid.is_empty() && self.ap_ssid.len() > 32 {
+            bail!("Wi-Fi setup SSID must be at most 32 bytes")
+        }
+        if self.ap_after_secs > 86_400 {
+            bail!("Wi-Fi setup ap_after_secs must be at most 86400 seconds")
+        }
+        if self.retry_secs == 0 || self.retry_secs > 86_400 {
+            bail!("Wi-Fi setup retry_secs must be within 1..86400 seconds")
+        }
+        if self.try_secs == 0 || self.try_secs > 86_400 {
+            bail!("Wi-Fi setup try_secs must be within 1..86400 seconds")
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
@@ -119,6 +140,7 @@ struct Inner {
     ap_ssid: String,
     /// what was around before the access point came up (it cannot scan)
     around: Vec<Network>,
+    saved: Vec<String>,
     /// saved on the access point: added once wpa_supplicant is back
     pending: Option<(String, Option<String>)>,
     /// the last try was for a network saved on the access point
@@ -151,6 +173,7 @@ impl Setup {
                 since: Instant::now(),
                 ap_ssid: String::new(),
                 around: Vec::new(),
+                saved: Vec::new(),
                 pending: None,
                 tried_saved: false,
                 failed: false,
@@ -206,16 +229,30 @@ impl Setup {
             // off: nothing to watch
             Phase::Client if cfg.mode == Mode::Off => st.without_network = Duration::ZERO,
             Phase::Client => {
-                let up = wifi::status().map(|s| s.connected()).unwrap_or(false);
-                st.without_network = if up {
-                    Duration::ZERO
-                } else {
-                    st.without_network + TICK
-                };
                 let asked = st.request.take() == Some(true);
+                let status = wifi::status();
+                let up = match &status {
+                    Ok(status) => status.connected(),
+                    Err(error) => {
+                        st.error = Some(format!("Wi-Fi status unavailable: {error:#}"));
+                        tracing::warn!(%error, "wifi setup: could not read Wi-Fi status");
+                        if !asked {
+                            return;
+                        }
+                        false
+                    }
+                };
+                if status.is_ok() {
+                    st.without_network = if up {
+                        Duration::ZERO
+                    } else {
+                        st.without_network + TICK
+                    };
+                }
                 let cooling = st.cooldown_until.is_some_and(|t| now < t);
                 let due = asked
-                    || (cfg.mode == Mode::Auto
+                    || (status.is_ok()
+                        && cfg.mode == Mode::Auto
                         && st.without_network >= Duration::from_secs(cfg.ap_after_secs));
                 if cfg.mode != Mode::Off && due && !cooling {
                     match self.hostapd(cfg) {
@@ -301,11 +338,20 @@ impl Setup {
                 }
             }
             Phase::Try => {
-                if wifi::status().map(|s| s.connected()).unwrap_or(false) {
+                let connected = match wifi::status() {
+                    Ok(status) => status.connected(),
+                    Err(error) => {
+                        st.error = Some(format!("Wi-Fi status unavailable: {error:#}"));
+                        tracing::debug!(%error, "wifi setup: Wi-Fi status is not available during reconnect");
+                        false
+                    }
+                };
+                if connected {
                     tracing::info!("wifi setup: network back");
                     st.phase = Phase::Client;
                     st.since = now;
                     st.failed = false;
+                    st.error = None;
                     st.without_network = Duration::ZERO;
                 } else if since >= Duration::from_secs(cfg.try_secs) {
                     st.failed = st.tried_saved;
@@ -368,13 +414,28 @@ impl Setup {
         hostapd: &Path,
         runtime: &tokio::runtime::Handle,
     ) -> Result<()> {
+        st.saved = match wifi::saved() {
+            Ok(networks) => networks.into_iter().map(|(_, ssid)| ssid).collect(),
+            Err(error) => {
+                tracing::warn!(%error, "wifi setup: could not cache saved network names");
+                Vec::new()
+            }
+        };
         // what is around, for the page: the access point cannot scan
-        if wifi::scan().is_ok() {
-            thread::sleep(Duration::from_secs(4));
+        match wifi::scan() {
+            Ok(()) => thread::sleep(Duration::from_secs(4)),
+            Err(error) => {
+                tracing::warn!(%error, "wifi setup: could not scan before starting the access point")
+            }
         }
-        if let Ok(around) = wifi::scan_results() {
-            if !around.is_empty() || st.around.is_empty() {
-                st.around = around;
+        match wifi::scan_results() {
+            Ok(around) => {
+                if !around.is_empty() || st.around.is_empty() {
+                    st.around = around;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "wifi setup: could not read scan results before starting the access point")
             }
         }
         // the station's wpa_supplicant steps aside; how it was started is
@@ -473,7 +534,9 @@ impl Setup {
             let _ = r.hostapd.kill();
             let _ = r.hostapd.wait();
         }
-        let _ = set_address(None);
+        if let Err(error) = set_address(None) {
+            tracing::warn!(%error, "wifi setup: could not remove the access point address");
+        }
         if restore && !st.supplicant.is_empty() && find_processes("wpa_supplicant").is_empty() {
             let mut args = st.supplicant.clone();
             // in the background whatever it was, never a child that dies with us
@@ -516,25 +579,36 @@ impl Setup {
     }
 
     /// The network as the page shows it.
-    pub fn status(&self) -> Value {
+    pub fn status(&self) -> Result<Value> {
         let cfg = self.settings();
-        let st = self.inner.lock().unwrap();
+        cfg.validate()?;
+        let mut st = self.inner.lock().unwrap();
         let on_ap = st.phase == Phase::Ap;
         let (current, saved, around) = if on_ap {
-            (None, Vec::new(), st.around.clone())
+            (None, st.saved.clone(), st.around.clone())
         } else {
-            let status = wifi::status().ok();
-            let current = status.filter(|s| s.connected());
+            if !wifi::available() {
+                bail!("Wi-Fi is not available: wpa_cli or interface wlan0 is missing")
+            }
+            let status = wifi::status().context("read Wi-Fi status")?;
+            let current = status.connected().then_some(status);
             let saved: Vec<String> = wifi::saved()
-                .map(|v| v.into_iter().map(|(_, n)| n).collect())
-                .unwrap_or_default();
-            (current, saved, wifi::scan_results().unwrap_or_default())
+                .context("read saved Wi-Fi networks")?
+                .into_iter()
+                .map(|(_, n)| n)
+                .collect();
+            st.saved.clone_from(&saved);
+            (
+                current,
+                saved,
+                wifi::scan_results().context("read Wi-Fi scan results")?,
+            )
         };
         let around: Vec<Value> = around
             .iter()
             .map(|n| json!({"ssid": n.ssid, "signal_dbm": n.signal_dbm, "secure": n.secure, "freq": n.freq, "saved": saved.contains(&n.ssid)}))
             .collect();
-        json!({
+        Ok(json!({
             "available": wifi::available(),
             "current": current,
             "saved": saved,
@@ -549,7 +623,7 @@ impl Setup {
                 "failed": st.failed,
                 "error": st.error,
             }
-        })
+        }))
     }
 
     /// A network from the page: added now, or on the access point once the
@@ -576,12 +650,13 @@ impl Setup {
         wifi::forget(ssid)
     }
 
-    pub fn scan(&self) -> Result<()> {
+    pub fn scan(&self) -> Result<bool> {
         if self.inner.lock().unwrap().phase == Phase::Ap {
             // the access point cannot scan: its list is the one from before
-            return Ok(());
+            return Ok(false);
         }
-        wifi::scan()
+        wifi::scan()?;
+        Ok(true)
     }
 }
 
@@ -660,20 +735,21 @@ fn phones_present(leases: &Mutex<Leases>, now: Instant) -> usize {
 
 /// The access point's address on the interface (`None`: removed).
 fn set_address(ip: Option<Ipv4Addr>) -> Result<()> {
-    let ok = |cmd: &mut Command| {
-        cmd.stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    let ok = |cmd: &mut Command| -> Result<bool> {
+        let program = cmd.get_program().to_string_lossy().into_owned();
+        match cmd.stdout(Stdio::null()).stderr(Stdio::null()).status() {
+            Ok(status) => Ok(status.success()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).with_context(|| format!("run {program}")),
+        }
     };
     let iface = wifi::IFACE;
     match ip {
         Some(ip) => {
             let cidr = format!("{ip}/24");
-            let with_ip = ok(Command::new("ip").args(["addr", "flush", "dev", iface]))
-                && ok(Command::new("ip").args(["addr", "add", &cidr, "dev", iface]))
-                && ok(Command::new("ip").args(["link", "set", iface, "up"]));
+            let with_ip = ok(Command::new("ip").args(["addr", "flush", "dev", iface]))?
+                && ok(Command::new("ip").args(["addr", "add", &cidr, "dev", iface]))?
+                && ok(Command::new("ip").args(["link", "set", iface, "up"]))?;
             if !with_ip
                 && !ok(Command::new("ifconfig").args([
                     iface,
@@ -681,14 +757,16 @@ fn set_address(ip: Option<Ipv4Addr>) -> Result<()> {
                     "netmask",
                     "255.255.255.0",
                     "up",
-                ]))
+                ]))?
             {
                 bail!("could not give {iface} the address {ip}");
             }
         }
         None => {
-            if !ok(Command::new("ip").args(["addr", "flush", "dev", iface])) {
-                ok(Command::new("ifconfig").args([iface, "0.0.0.0"]));
+            if !ok(Command::new("ip").args(["addr", "flush", "dev", iface]))?
+                && !ok(Command::new("ifconfig").args([iface, "0.0.0.0"]))?
+            {
+                bail!("could not remove the access point address from {iface}");
             }
         }
     }
@@ -772,7 +850,13 @@ fn portal(
     let router = Router::new()
         .route("/", get(|| async { Html(PAGE) }))
         .route("/api/wifi", get(portal_status))
-        .route("/api/wifi/networks", post(portal_add))
+        .route("/api/wifi/scan", post(portal_scan))
+        .route("/api/wifi/networks", get(portal_networks).post(portal_add))
+        .route("/api/wifi/networks/:ssid", delete(portal_forget))
+        .route(
+            "/api/wifi/setup",
+            get(portal_setup_status).post(portal_setup),
+        )
         .fallback(|| async { Redirect::temporary(&format!("http://{AP_IP}/")) })
         .with_state(setup);
     Ok(runtime.spawn(async move {
@@ -793,14 +877,73 @@ fn error(status: StatusCode, e: anyhow::Error) -> Response {
 
 async fn portal_status(State(setup): State<Arc<Setup>>) -> Response {
     match tokio::task::spawn_blocking(move || setup.status()).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
+    }
+}
+
+async fn portal_networks(State(setup): State<Arc<Setup>>) -> Response {
+    match tokio::task::spawn_blocking(move || setup.status()).await {
+        Ok(Ok(status)) => Json(json!({
+            "saved": status["saved"],
+            "around": status["around"]
+        }))
+        .into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
+    }
+}
+
+async fn portal_setup_status(State(setup): State<Arc<Setup>>) -> Response {
+    match tokio::task::spawn_blocking(move || setup.status()).await {
+        Ok(Ok(status)) => Json(status["setup"].clone()).into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
     }
 }
 
 async fn portal_add(State(setup): State<Arc<Setup>>, Json(req): Json<NetworkRequest>) -> Response {
+    if let Err(error) = wifi::check(&req.ssid, &req.password) {
+        return self::error(StatusCode::BAD_REQUEST, error);
+    }
     match tokio::task::spawn_blocking(move || setup.add(&req.ssid, &req.password)).await {
         Ok(Ok(leaving)) => Json(json!({"leaving": leaving})).into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
+    }
+}
+
+async fn portal_scan(State(setup): State<Arc<Setup>>) -> Response {
+    match tokio::task::spawn_blocking(move || setup.scan()).await {
+        Ok(Ok(started)) => Json(json!({"started": started})).into_response(),
+        Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
+    }
+}
+
+async fn portal_forget(
+    State(setup): State<Arc<Setup>>,
+    axum::extract::Path(ssid): axum::extract::Path<String>,
+) -> Response {
+    match tokio::task::spawn_blocking(move || setup.forget(&ssid)).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) if e.downcast_ref::<wifi::NetworkNotFound>().is_some() => {
+            error(StatusCode::NOT_FOUND, e)
+        }
+        Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetupRequest {
+    on: bool,
+}
+
+async fn portal_setup(State(setup): State<Arc<Setup>>, Json(req): Json<SetupRequest>) -> Response {
+    match tokio::task::spawn_blocking(move || setup.request(req.on)).await {
+        Ok(Ok(())) => StatusCode::ACCEPTED.into_response(),
         Ok(Err(e)) => error(StatusCode::BAD_REQUEST, e),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.into()),
     }
@@ -826,5 +969,20 @@ mod tests {
         assert_eq!(s.ap_after_secs, 180);
         let s: WifiSetupSettings = toml::from_str("mode = \"auto\"\nretry_secs = 120\n").unwrap();
         assert_eq!((s.mode, s.retry_secs, s.try_secs), (Mode::Auto, 120, 60));
+    }
+
+    #[test]
+    fn settings_validate_channel_ssid_and_intervals() {
+        let mut settings = WifiSetupSettings::default();
+        assert!(settings.validate().is_ok());
+
+        settings.channel = 0;
+        assert!(settings.validate().is_err());
+        settings.channel = 6;
+        settings.ap_ssid = "a".repeat(33);
+        assert!(settings.validate().is_err());
+        settings.ap_ssid.clear();
+        settings.retry_secs = 0;
+        assert!(settings.validate().is_err());
     }
 }

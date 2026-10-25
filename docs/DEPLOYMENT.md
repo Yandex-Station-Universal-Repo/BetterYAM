@@ -63,7 +63,8 @@ plugin runtime, `led.rs` — аппаратную функцию LED.
 | `POST /sensors/ambient-light/configure` | `{name, gain, integration_ms}` |
 | `GET /clock`, `PUT /clock` | `ClockInfo`; запрос принимает `time`, `brightness`, `segments` или `off` |
 | `GET /api/volume`, `PUT /api/volume` | Получение уровня; установка `{percent}` |
-| `POST /audio/play` | Тело запроса — audio bytes из файла пакета |
+| `POST /audio/play` | Тело запроса — PCM WAV bytes; максимум 64 MiB и 600 секунд |
+| `POST /api/runtime/{id}/audio/play` | То же для binary plugins; требуются runtime token и permission `audio` |
 | `GET /api/bluetooth/status` | JSON-статус |
 | `PUT /api/bluetooth/power` | `{on: boolean}`; доступно только когда Quasar остановлен |
 | `GET /display/backlights` | Список доступных backlight IDs |
@@ -79,8 +80,16 @@ plugin runtime, `led.rs` — аппаратную функцию LED.
 если `amixer` может прочитать control. Input capability включается только если
 event-устройства доступны daemon-процессу; пакет может читать только имена из
 `[input].devices`. Остальные перечисленные операции/API оставлены в runtime,
-но Mini сообщает для них `capabilities: false` и возвращает понятную ошибку
-до появления hardware-реализации. Bluetooth status читается из `rfkill` и
+но Mini сообщает для неподдерживаемых операций `capabilities: false` и
+возвращает понятную ошибку до появления hardware-реализации. Audio playback
+доступен через `aplay`, если команда успешно перечисляет ALSA playback devices;
+поддерживается только mono/stereo PCM WAV с sample rate 8..192 kHz и длительностью
+не более 600 секунд. Операция передаёт данные через временный файл, удаляет его
+после завершения и отменяется при остановке plugin. Proximity sensor
+обнаруживается через Linux `ABS_DISTANCE`; API отдаёт значение в mm, если оно
+лежит в допустимом диапазоне 0..8192, иначе `value: null`. На проверенном Mini
+live API вернул `819 mm`; физическое воспроизведение аудио не проверялось.
+Bluetooth status читается из `rfkill` и
 `bsa_server`; capability status сохраняется доступной. Включение/выключение вызывает системный
 `bsa_server_run.sh`. Power capability и каждая команда power проверяют
 `pidof quasar_launcher2` и `pidof maind`; при работающем Quasar операция
@@ -112,10 +121,22 @@ wpa_supplicant, поэтому прошивка видит её как свою.
 | Маршрут | Контракт |
 | --- | --- |
 | `GET /api/wifi` | `{available, current, saved, around, setup}`: текущая сеть, сохранённые, сети вокруг, состояние своей сети |
-| `POST /api/wifi/scan` | Начать поиск сетей (на своей сети — ничего: точка доступа не сканирует) |
+| `GET /api/wifi/networks` | `{saved, around}` без паролей |
+| `POST /api/wifi/scan` | `{started}`; начать поиск сетей (`false` в режиме собственной точки доступа) |
 | `POST /api/wifi/networks` | `{ssid, password}`; пустой пароль — открытая сеть. Ответ `{leaving}`: `true`, если колонка уходит со своей сети на эту |
 | `DELETE /api/wifi/networks/{ssid}` | Забыть сеть |
+| `GET /api/wifi/setup` | Состояние точки доступа, её доступность и последняя ошибка |
 | `POST /api/wifi/setup` | `{on}`: поднять или убрать свою сеть вручную |
+| `GET/PUT /api/settings` | Прочитать/сохранить `wifi_setup` (режим, имя, канал и интервалы); значения валидируются перед сохранением |
+
+Те же операции доступны package runtime по `/api/runtime/{id}/wifi...` с
+обязательными runtime token и permission `wifi`, а из Lua — если manifest
+явно запросил это permission. Lua методы: `alice.wifi.status()`, `scan()`,
+`add(ssid, password)`, `forget(ssid)` и `setup(on)`. `status()` включает
+`current`, `saved`, `around` и `setup`; `scan()` возвращает `true`, если поиск
+запущен, и `false`, когда устройство уже находится в режиме собственной точки
+доступа. Ошибки backend возвращаются вызывающему коду, а не заменяются пустым
+результатом.
 
 **Своя сеть (экспериментально, на железе ещё не проверялась).** Без сети
 колонка поднимает открытую сеть `BetterYAM-XXXX` (`192.168.4.1`). Телефон,

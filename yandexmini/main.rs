@@ -1,12 +1,15 @@
 use anyhow::{anyhow, bail, Context, Result};
+mod audio;
 mod bluetooth;
 mod captive;
 mod input;
 mod led;
+mod sensors;
 mod volume;
 mod wifi;
 mod wifi_setup;
 use axum::{
+    body::Bytes,
     extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
@@ -612,6 +615,7 @@ fn populate_capabilities(device: &mut DeviceProfile) {
         "sensors",
         "sensors.list",
         "sensors.read",
+        "sensors.proximity",
         "sensors.control",
         "sensors.ambient_light.configure",
         "clock",
@@ -854,6 +858,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         )
     };
     let led = app.led.clone();
+    let wifi = app.wifi.clone();
     task::spawn_blocking(move || -> Result<()> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
@@ -862,6 +867,47 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         let globals = lua.globals();
         let api = lua.create_table()?;
         let permissions: HashSet<_> = manifest.permissions.iter().map(String::as_str).collect();
+        if permissions.contains("wifi") {
+            let wifi_api = lua.create_table()?;
+            set_lua_availability(&lua, &wifi_api, &device, "wifi")?;
+            let status_wifi = wifi.clone();
+            wifi_api.set(
+                "status",
+                lua.create_function(move |lua, ()| {
+                    let value = status_wifi.status().map_err(mlua::Error::external)?;
+                    lua.to_value(&value)
+                })?,
+            )?;
+            let scan_wifi = wifi.clone();
+            wifi_api.set(
+                "scan",
+                lua.create_function(move |_, ()| scan_wifi.scan().map_err(mlua::Error::external))?,
+            )?;
+            let add_wifi = wifi.clone();
+            wifi_api.set(
+                "add",
+                lua.create_function(move |_, (ssid, password): (String, Option<String>)| {
+                    add_wifi
+                        .add(&ssid, password.as_deref().unwrap_or_default())
+                        .map_err(mlua::Error::external)
+                })?,
+            )?;
+            let forget_wifi = wifi.clone();
+            wifi_api.set(
+                "forget",
+                lua.create_function(move |_, ssid: String| {
+                    forget_wifi.forget(&ssid).map_err(mlua::Error::external)
+                })?,
+            )?;
+            let setup_wifi = wifi.clone();
+            wifi_api.set(
+                "setup",
+                lua.create_function(move |_, on: bool| {
+                    setup_wifi.request(on).map_err(mlua::Error::external)
+                })?,
+            )?;
+            api.set("wifi", wifi_api)?;
+        }
         let cancelled_sleep = cancelled.clone();
         api.set(
             "sleep",
@@ -994,6 +1040,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
             set_lua_availability(&lua, &audio, &device, "audio")?;
             let audio_root = root.clone();
             let audio_led = led.clone();
+            let audio_cancelled = cancelled.clone();
             audio.set(
                 "play",
                 lua.create_function(move |_, file: String| {
@@ -1007,8 +1054,13 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                         return Err(mlua::Error::external("audio file exceeds 64 MiB"));
                     }
                     let contents = fs::read(path).map_err(mlua::Error::external)?;
+                    audio::validate(&contents).map_err(mlua::Error::external)?;
                     tokio::runtime::Handle::current()
-                        .block_on(audio_led.api_bytes("audio/play", contents))
+                        .block_on(audio_led.api_bytes(
+                            "audio/play",
+                            contents,
+                            audio_cancelled.clone(),
+                        ))
                         .map_err(mlua::Error::external)
                 })?,
             )?;
@@ -1940,6 +1992,42 @@ async fn runtime_sensors(
     runtime_permission(&a, &id, &headers, "sensors").await?;
     get_sensors(State(a)).await
 }
+async fn runtime_sensor_read(
+    State(a): State<App>,
+    AxumPath((id, sensor)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<SensorInfo>, ApiError> {
+    runtime_permission(&a, &id, &headers, "sensors").await?;
+    let value = a
+        .led
+        .api_json(Method::GET, &format!("sensors/{sensor}"), None)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(serde_json::from_value(value)?))
+}
+async fn runtime_audio_play(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "audio").await?;
+    audio::validate(&body).map_err(ApiError::new)?;
+    let cancelled = a
+        .plugins
+        .lock()
+        .await
+        .running
+        .get(&id)
+        .cloned()
+        .context("plugin is not running")
+        .map_err(ApiError::new)?;
+    a.led
+        .api_bytes("audio/play", body.to_vec(), cancelled)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(StatusCode::NO_CONTENT)
+}
 async fn runtime_led(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
@@ -2077,6 +2165,80 @@ async fn runtime_input_next_event(
         .map_err(ApiError::backend)?;
     Ok(Json(value))
 }
+async fn runtime_wifi(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    let wifi = a.wifi.clone();
+    Ok(Json(wifi_blocking(move || wifi.status()).await?))
+}
+async fn runtime_wifi_scan(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    let wifi = a.wifi.clone();
+    let started = wifi_blocking(move || wifi.scan()).await?;
+    Ok(Json(serde_json::json!({"started": started})))
+}
+async fn runtime_wifi_networks(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    let wifi = a.wifi.clone();
+    let status = wifi_blocking(move || wifi.status()).await?;
+    Ok(Json(serde_json::json!({
+        "saved": status["saved"],
+        "around": status["around"]
+    })))
+}
+async fn runtime_wifi_network(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<wifi_setup::NetworkRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    wifi::check(&request.ssid, &request.password).map_err(ApiError::new)?;
+    let wifi = a.wifi.clone();
+    let leaving = wifi_blocking(move || wifi.add(&request.ssid, &request.password)).await?;
+    Ok(Json(serde_json::json!({"leaving": leaving})))
+}
+async fn runtime_wifi_forget(
+    State(a): State<App>,
+    AxumPath((id, ssid)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    let wifi = a.wifi.clone();
+    wifi_blocking(move || wifi.forget(&ssid)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn runtime_wifi_setup(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<WifiSetupRequest>,
+) -> Result<StatusCode, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    wifi_setup_request(a.wifi.clone(), request.on).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+async fn runtime_wifi_setup_status(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    runtime_permission(&a, &id, &headers, "wifi").await?;
+    let wifi = a.wifi.clone();
+    let status = wifi_blocking(move || wifi.status()).await?;
+    Ok(Json(status["setup"].clone()))
+}
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
 }
@@ -2087,6 +2249,17 @@ async fn get_sensors(State(a): State<App>) -> Result<Json<Vec<SensorInfo>>, ApiE
     let value = a
         .led
         .api_json(Method::GET, "sensors", None)
+        .await
+        .map_err(ApiError::backend)?;
+    Ok(Json(serde_json::from_value(value)?))
+}
+async fn get_sensor(
+    State(a): State<App>,
+    AxumPath(sensor): AxumPath<String>,
+) -> Result<Json<SensorInfo>, ApiError> {
+    let value = a
+        .led
+        .api_json(Method::GET, &format!("sensors/{sensor}"), None)
         .await
         .map_err(ApiError::backend)?;
     Ok(Json(serde_json::from_value(value)?))
@@ -2138,6 +2311,7 @@ async fn put_settings(
     if s.web.ui && !s.web.api {
         return Err(ApiError::new(anyhow!("web.ui requires web.api")));
     }
+    s.wifi_setup.validate().map_err(ApiError::new)?;
     write_atomic(
         &a.root.join("settings.toml"),
         toml::to_string_pretty(&s)?.as_bytes(),
@@ -2205,21 +2379,48 @@ async fn wifi_blocking<T: Send + 'static>(
     task::spawn_blocking(work)
         .await
         .map_err(|e| ApiError::backend(e.into()))?
-        .map_err(ApiError::backend)
+        .map_err(wifi_operation_error)
+}
+fn wifi_operation_error(error: anyhow::Error) -> ApiError {
+    if error.downcast_ref::<wifi::NetworkNotFound>().is_some() {
+        ApiError::not_found(error)
+    } else {
+        ApiError::backend(error)
+    }
+}
+async fn wifi_setup_request(wifi: Arc<wifi_setup::Setup>, on: bool) -> Result<(), ApiError> {
+    task::spawn_blocking(move || wifi.request(on))
+        .await
+        .map_err(|error| ApiError::backend(error.into()))?
+        .map_err(ApiError::new)
 }
 async fn get_wifi(State(a): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
     let wifi = a.wifi.clone();
-    Ok(Json(wifi_blocking(move || Ok(wifi.status())).await?))
+    Ok(Json(wifi_blocking(move || wifi.status()).await?))
 }
-async fn post_wifi_scan(State(a): State<App>) -> Result<StatusCode, ApiError> {
+async fn get_wifi_networks(State(a): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
     let wifi = a.wifi.clone();
-    wifi_blocking(move || wifi.scan()).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let status = wifi_blocking(move || wifi.status()).await?;
+    Ok(Json(serde_json::json!({
+        "saved": status["saved"],
+        "around": status["around"]
+    })))
+}
+async fn get_wifi_setup(State(a): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
+    let wifi = a.wifi.clone();
+    let status = wifi_blocking(move || wifi.status()).await?;
+    Ok(Json(status["setup"].clone()))
+}
+async fn post_wifi_scan(State(a): State<App>) -> Result<Json<serde_json::Value>, ApiError> {
+    let wifi = a.wifi.clone();
+    let started = wifi_blocking(move || wifi.scan()).await?;
+    Ok(Json(serde_json::json!({"started": started})))
 }
 async fn post_wifi_network(
     State(a): State<App>,
     Json(request): Json<wifi_setup::NetworkRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    wifi::check(&request.ssid, &request.password).map_err(ApiError::new)?;
     let wifi = a.wifi.clone();
     let leaving = wifi_blocking(move || wifi.add(&request.ssid, &request.password)).await?;
     Ok(Json(serde_json::json!({ "leaving": leaving })))
@@ -2236,8 +2437,7 @@ async fn post_wifi_setup(
     State(a): State<App>,
     Json(request): Json<WifiSetupRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let wifi = a.wifi.clone();
-    wifi_blocking(move || wifi.request(request.on)).await?;
+    wifi_setup_request(a.wifi.clone(), request.on).await?;
     Ok(StatusCode::ACCEPTED)
 }
 #[derive(Debug)]
@@ -2257,6 +2457,13 @@ impl ApiError {
         Self {
             error,
             status: StatusCode::BAD_GATEWAY,
+        }
+    }
+
+    fn not_found(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            status: StatusCode::NOT_FOUND,
         }
     }
 }
@@ -2376,6 +2583,7 @@ async fn main() -> Result<()> {
             return Err(error).with_context(|| format!("read {}", settings_path.display()))
         }
     };
+    settings.wifi_setup.validate()?;
     let settings = Arc::new(Mutex::new(settings));
     // the Wi-Fi setup runs whatever the network does: without one it is
     // the way to get one
@@ -2391,6 +2599,15 @@ async fn main() -> Result<()> {
         device.id = device_identifier(&device.model);
     }
     apply_device_info(&mut device, led.device_info().await?);
+    let wifi_available = wifi::available();
+    for capability in ["wifi", "wifi.status", "wifi.scan", "wifi.networks"] {
+        device
+            .capabilities
+            .insert(capability.into(), wifi_available);
+        if wifi_available && !device.features.iter().any(|feature| feature == capability) {
+            device.features.push(capability.into());
+        }
+    }
     let ap = {
         let wifi = wifi.clone();
         task::spawn_blocking(move || wifi.ap_available()).await?
@@ -2453,6 +2670,8 @@ async fn main() -> Result<()> {
             .route("/api/plugins/:id/logs", get(package_logs))
             .route("/api/runtime/:id/device", get(runtime_device))
             .route("/api/runtime/:id/sensors", get(runtime_sensors))
+            .route("/api/runtime/:id/sensors/:sensor", get(runtime_sensor_read))
+            .route("/api/runtime/:id/audio/play", post(runtime_audio_play))
             .route("/api/runtime/:id/led", post(runtime_led))
             .route("/api/runtime/:id/led/off", post(runtime_led_off))
             .route("/api/runtime/:id/logo", post(runtime_logo))
@@ -2475,9 +2694,24 @@ async fn main() -> Result<()> {
                 "/api/runtime/:id/input/next-event",
                 post(runtime_input_next_event),
             )
+            .route("/api/runtime/:id/wifi", get(runtime_wifi))
+            .route("/api/runtime/:id/wifi/scan", post(runtime_wifi_scan))
+            .route(
+                "/api/runtime/:id/wifi/networks",
+                get(runtime_wifi_networks).post(runtime_wifi_network),
+            )
+            .route(
+                "/api/runtime/:id/wifi/networks/:ssid",
+                delete(runtime_wifi_forget),
+            )
+            .route(
+                "/api/runtime/:id/wifi/setup",
+                get(runtime_wifi_setup_status).post(runtime_wifi_setup),
+            )
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
             .route("/api/sensors", get(get_sensors))
+            .route("/api/sensors/:sensor", get(get_sensor))
             .route("/api/clock", get(get_clock).put(put_clock))
             .route("/api/led", post(led_set))
             .route("/api/led/off", post(led_off))
@@ -2486,9 +2720,12 @@ async fn main() -> Result<()> {
             .route("/api/bluetooth/power", put(put_bluetooth_power))
             .route("/api/wifi", get(get_wifi))
             .route("/api/wifi/scan", post(post_wifi_scan))
-            .route("/api/wifi/networks", post(post_wifi_network))
+            .route(
+                "/api/wifi/networks",
+                get(get_wifi_networks).post(post_wifi_network),
+            )
             .route("/api/wifi/networks/:ssid", delete(delete_wifi_network))
-            .route("/api/wifi/setup", post(post_wifi_setup))
+            .route("/api/wifi/setup", get(get_wifi_setup).post(post_wifi_setup))
             .route("/api/logo", post(logo_set))
             .route("/api/logo/off", post(logo_off));
     }

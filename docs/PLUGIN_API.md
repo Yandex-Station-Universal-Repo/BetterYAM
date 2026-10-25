@@ -13,6 +13,7 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 | `sensors.control` | `alice.sensors.configure_ambient_light()` |
 | `clock` | `alice.clock.available()`, `is_available()`, `time()`, `segments()`, `off()` |
 | `input` | `alice.input.devices()`, `next_event(timeout_ms)` |
+| `wifi` | `alice.wifi.status()`, `scan()`, `add(ssid, password?)`, `forget(ssid)`, `setup(on)` |
 | `network` | `alice.http.get(url)`, `post(url, body)` |
 | `ipc.alarm` | `alice.ipc.next_alarm(timeout_ms)` |
 | `ipc.speech` | `alice.ipc.next_speech(timeout_ms)` |
@@ -29,6 +30,7 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 `alice.sensors.is_available()`, `alice.clock.is_available()`,
 `alice.input.is_available()`, `alice.sensors.control.is_available()`,
 `alice.ipc.alarm.is_available()` и `alice.ipc.speech.is_available()`.
+`alice.wifi.is_available()` сообщает, доступен ли Wi-Fi adapter.
 Для отдельных возможностей используйте `device.capabilities`, например
 `device.capabilities["clock.segments"]` или
 `device.capabilities["led.ring.12"]`. Capability keys включают API-группы и
@@ -39,11 +41,22 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 `alice.clock.segments({...})`; у него также есть
 `alice.clock.segments.is_available()`.
 
+Permission `wifi` предоставляет доступ к сетям устройства и поэтому позволяет
+плагину менять сохранённые подключения или включать точку доступа. Не выдавайте
+его пакетам, которым эти операции не нужны. `alice.wifi.status()` возвращает
+текущую сеть, сохранённые и обнаруженные сети, а также состояние точки доступа;
+пароли в ответ не включаются. `scan()` возвращает `false`, если устройство не
+может сканировать в текущем режиме.
+
 `device` содержит `id`, `model`, `architecture`, `led_count`, `features` и
 boolean-словарь `capabilities`, заполненные модельным BetterYAMd.
 `features` сохраняет совместимость с `plugin.toml`. `alice.logo.set` и
 `alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
 использует `device.led_count`; проверку frame выполняет драйвер этой модели.
+
+Для Yandex Mini доступны отдельные описания методов Lua API в
+[каталоге API устройства](../yandexmini/docs/api/README.md): аргументы,
+результаты, permission, примеры и фактическая доступность на Mini.
 
 Например, Yandex Mini сообщает `led.ring.rgb` и `led.ring.6` как доступные.
 `input` доступен, когда daemon обнаружил доступные `/dev/input/event*`
@@ -53,8 +66,13 @@ status доступен через rfkill/BSA adapter. Power доступен т
 работают процессы `quasar_launcher2` и `maind`; перед каждым изменением
 состояние проверяется повторно. Scan, pair/connect/disconnect/remove и
 discoverable остаются недоступными, пока нет безопасного API без перезапуска
-`bsa_server`. Audio, display, sensors, clock и IPC остаются в plugin API, но
-помечены недоступными до появления подтверждённой аппаратной реализации.
+`bsa_server`. Audio playback доступен, если `aplay` обнаруживает playback
+устройство; принимаются PCM WAV-файлы до 64 MiB и 600 секунд, остановка
+плагина отменяет воспроизведение. Proximity sensors обнаруживаются через
+доступные Linux input devices с `ABS_DISTANCE`; значение возвращается в mm,
+а показания вне диапазона 0..8192 возвращаются как `nil`. Доступность
+display, управления sensors, clock и IPC зависит от подтверждённого адаптера;
+сейчас эти capabilities остаются `false`.
 
 ## Совместимость и сеть
 

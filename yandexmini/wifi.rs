@@ -8,8 +8,11 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 pub const IFACE: &str = "wlan0";
 /// Where wpa_cli is looked for besides PATH.
@@ -38,6 +41,17 @@ pub struct Status {
     pub ip: Option<String>,
     pub freq: Option<u32>,
 }
+
+#[derive(Debug)]
+pub struct NetworkNotFound(String);
+
+impl fmt::Display for NetworkNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "no saved network '{}'", self.0)
+    }
+}
+
+impl std::error::Error for NetworkNotFound {}
 
 impl Status {
     pub fn connected(&self) -> bool {
@@ -234,7 +248,7 @@ pub fn forget(ssid: &str) -> Result<()> {
         .map(|(id, _)| id)
         .collect();
     if ids.is_empty() {
-        bail!("no saved network '{ssid}'")
+        return Err(NetworkNotFound(ssid.to_string()).into());
     }
     for id in ids {
         wpa_ok(&["remove_network", &id.to_string()])?;

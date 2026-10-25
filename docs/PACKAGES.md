@@ -27,10 +27,22 @@ yam install package.yap          # локальный архив
 yam install nano                 # последняя версия из registry
 yam install nano 8.0             # конкретная версия
 yam enable nano
+yam service list
+yam service enable ambient-lights
+yam service restart ambient-lights
+yam service logs ambient-lights
 yam run nano -- --help
 yam tui nano                     # интерактивный binary oneshot через ADB
 yam stop nano
 yam rm nano
 ```
+
+`yam service` управляет только пакетами с `launch.mode = "service"`:
+`enable` запускает сервис и сохраняет автозапуск, `disable` останавливает его
+и отключает автозапуск, `start` запускает включённый сервис, `stop` останавливает
+без отключения, `restart` перезапускает включённый сервис, `list` показывает
+установленные сервисы и их состояние, а `logs` выводит журнал сервиса.
+Существующие команды `yam enable`, `yam disable`, `yam stop` и `yam logs`
+сохранены для обратной совместимости.
 
 Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета. Hardware операции маршрутизируются через Device API текущей модели BetterYAMd.

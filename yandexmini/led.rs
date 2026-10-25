@@ -94,6 +94,19 @@ impl Led {
         if volume_available {
             features.extend(["volume".into(), "volume.get".into(), "volume.set".into()]);
         }
+        let audio_available = crate::audio::available().await;
+        if audio_available {
+            features.extend(["audio".into(), "audio.play".into()]);
+        }
+        let sensors_available = crate::sensors::available().await;
+        if sensors_available {
+            features.extend([
+                "sensors".into(),
+                "sensors.list".into(),
+                "sensors.read".into(),
+                "sensors.proximity".into(),
+            ]);
+        }
         let bluetooth_capabilities = crate::bluetooth::availability().await?;
         if bluetooth_capabilities.status {
             features.extend(["bluetooth".into(), "bluetooth.status".into()]);
@@ -127,12 +140,16 @@ impl Led {
             ("volume".into(), volume_available),
             ("volume.get".into(), volume_available),
             ("volume.set".into(), volume_available),
-            ("audio".into(), false),
+            ("audio".into(), audio_available),
+            ("audio.play".into(), audio_available),
             ("bluetooth".into(), bluetooth_capabilities.status),
             ("bluetooth.status".into(), bluetooth_capabilities.status),
             ("bluetooth.power".into(), bluetooth_capabilities.power),
             ("display".into(), false),
-            ("sensors".into(), false),
+            ("sensors".into(), sensors_available),
+            ("sensors.list".into(), sensors_available),
+            ("sensors.read".into(), sensors_available),
+            ("sensors.proximity".into(), sensors_available),
             ("sensors.control".into(), false),
             ("input".into(), input_available),
             ("input.devices".into(), input_available),
@@ -155,6 +172,23 @@ impl Led {
     }
 
     pub async fn api_json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        if method == Method::GET && path == "sensors" {
+            let sensors = tokio::task::spawn_blocking(crate::sensors::list)
+                .await
+                .context("sensor list task failed")??;
+            return Ok(serde_json::to_value(sensors)?);
+        }
+        if method == Method::GET && path.starts_with("sensors/") {
+            let id = path.trim_start_matches("sensors/");
+            if id.is_empty() || id.contains('/') {
+                bail!("invalid sensor ID")
+            }
+            let id = id.to_owned();
+            let sensor = tokio::task::spawn_blocking(move || crate::sensors::read(&id))
+                .await
+                .context("sensor read task failed")??;
+            return Ok(serde_json::to_value(sensor)?);
+        }
         if method == Method::GET && path == "input/devices" {
             return Ok(serde_json::to_value(crate::input::device_names().await?)?);
         }
@@ -177,7 +211,15 @@ impl Led {
         )
     }
 
-    pub async fn api_bytes(&self, path: &str, _body: Vec<u8>) -> Result<()> {
+    pub async fn api_bytes(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<()> {
+        if path == "audio/play" {
+            return crate::audio::play(body, cancelled).await;
+        }
         bail!("Yandex Mini does not provide this operation yet: POST /{path}")
     }
 

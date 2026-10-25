@@ -50,6 +50,11 @@ enum Command {
     Logs {
         id: String,
     },
+    /// Manage background service packages.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Open an interactive ADB terminal for an enabled binary oneshot package.
     Tui {
         id: String,
@@ -84,6 +89,24 @@ enum Command {
 enum RegistryCommand {
     List,
     Pull { id: String, version: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Enable a service and start it now.
+    Enable { id: String },
+    /// Stop a service and prevent it from starting after reboot.
+    Disable { id: String },
+    /// Start an enabled service.
+    Start { id: String },
+    /// Stop a service without disabling it.
+    Stop { id: String },
+    /// Restart an enabled service.
+    Restart { id: String },
+    /// Show installed service packages and their state.
+    List,
+    /// Show a service's logs.
+    Logs { id: String },
 }
 
 #[derive(Subcommand)]
@@ -188,6 +211,9 @@ fn main() -> Result<()> {
                 .get(endpoint(&cli.url, &format!("/api/plugins/{id}/logs")))
                 .send()?,
         )?,
+        Command::Service { command } => {
+            service_command(&client, &cli.url, command)?;
+        }
         Command::Tui { id, args } => open_tui(&client, &cli.url, &id, &args)?,
         Command::Inspect { id } => {
             let packages: Value =
@@ -497,4 +523,128 @@ fn package_logs(client: &Client, url: &str, id: &str) -> Result<String> {
         .send()?
         .error_for_status()?
         .text()?)
+}
+
+fn service_command(client: &Client, url: &str, command: ServiceCommand) -> Result<()> {
+    match command {
+        ServiceCommand::Enable { id } => {
+            let package = get_service(client, url, &id)?;
+            if package["enabled"] != true {
+                set_enabled(client, url, &id, true)?;
+            } else if package["running"] != true {
+                start_service(client, url, &id)?;
+            }
+        }
+        ServiceCommand::Disable { id } => {
+            let package = get_service(client, url, &id)?;
+            if package["running"] == true {
+                stop_service(client, url, &id)?;
+            }
+            if package["enabled"] == true {
+                set_enabled(client, url, &id, false)?;
+            }
+        }
+        ServiceCommand::Start { id } => {
+            let package = get_service(client, url, &id)?;
+            if package["enabled"] != true {
+                bail!("service is disabled; run `yam service enable {id}` first")
+            }
+            if package["running"] != true {
+                start_service(client, url, &id)?;
+            }
+        }
+        ServiceCommand::Stop { id } => {
+            let package = get_service(client, url, &id)?;
+            if package["running"] == true {
+                stop_service(client, url, &id)?;
+            }
+        }
+        ServiceCommand::Restart { id } => {
+            let package = get_service(client, url, &id)?;
+            if package["enabled"] != true {
+                bail!("service is disabled; run `yam service enable {id}` first")
+            }
+            stop_service(client, url, &id)?;
+            start_service(client, url, &id)?;
+        }
+        ServiceCommand::List => {
+            let packages = list_packages(client, url)?;
+            let services = packages
+                .as_array()
+                .context("invalid package list from BetterYAMd")?
+                .iter()
+                .filter(|package| package["manifest"]["launch"]["mode"] == "service")
+                .collect::<Vec<_>>();
+            println!("{:<24} {:<10} {:<10} NAME", "ID", "ENABLED", "RUNNING");
+            for package in services {
+                let manifest = &package["manifest"];
+                let id = manifest["id"].as_str().unwrap_or("<unknown>");
+                let name = manifest["name"].as_str().unwrap_or(id);
+                println!(
+                    "{id:<24} {:<10} {:<10} {name}",
+                    state_label(&package["enabled"]),
+                    state_label(&package["running"]),
+                );
+            }
+        }
+        ServiceCommand::Logs { id } => {
+            get_service(client, url, &id)?;
+            print!("{}", package_logs(client, url, &id)?);
+        }
+    }
+    Ok(())
+}
+
+fn list_packages(client: &Client, url: &str) -> Result<Value> {
+    json_response(client.get(endpoint(url, "/api/plugins")).send()?)
+}
+
+fn get_service(client: &Client, url: &str, id: &str) -> Result<Value> {
+    let packages = list_packages(client, url)?;
+    let package = packages
+        .as_array()
+        .context("invalid package list from BetterYAMd")?
+        .iter()
+        .find(|package| package["manifest"]["id"] == id)
+        .with_context(|| format!("service package {id} not found"))?;
+    if package["manifest"]["launch"]["mode"] != "service" {
+        bail!("package {id} is not a service")
+    }
+    Ok(package.clone())
+}
+
+fn start_service(client: &Client, url: &str, id: &str) -> Result<()> {
+    print_response(
+        client
+            .post(endpoint(url, &format!("/api/plugins/{id}/invoke")))
+            .send()?,
+    )
+}
+
+fn stop_service(client: &Client, url: &str, id: &str) -> Result<()> {
+    print_response(
+        client
+            .post(endpoint(url, &format!("/api/plugins/{id}/stop")))
+            .send()?,
+    )
+}
+
+fn state_label(value: &Value) -> &'static str {
+    if value == true {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_state_labels_are_human_readable() {
+        assert_eq!(state_label(&Value::Bool(true)), "yes");
+        assert_eq!(state_label(&Value::Bool(false)), "no");
+        assert_eq!(state_label(&Value::Null), "no");
+    }
 }
