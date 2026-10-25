@@ -9,6 +9,8 @@ Device builds are listed in [`manifest.json`](./manifest.json).
 Run `sh tools/build-daemons.sh` with the AArch64 musl target toolchain installed
 (or `BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh`) to build every manifest entry and generate `dist/manifest.json` and
 `dist/SHA256SUMS`. Release `manifest.json` and each generated daemon asset.
+Pushing a `v*` tag runs the release workflow, which builds the CLI and device
+daemons, generates checksums, and publishes the installer assets.
 ## Installing on a station
 
 On Linux or macOS, connect the station with ADB, then run the installer:

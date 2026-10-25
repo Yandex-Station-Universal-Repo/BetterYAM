@@ -1,0 +1,125 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: yam
+            asset: yam-x86_64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: yam
+            asset: yam-aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: yam.exe
+            asset: yam-x86_64-pc-windows-msvc.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl compiler
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build CLI
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin yam
+      - name: Stage CLI asset
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "release-assets/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-cli-${{ matrix.asset }}
+          path: release-assets/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build-daemons:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build device daemons
+        run: BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-daemon
+          path: dist/assets/*
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: dist/manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [build-cli, build-daemons]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-daemon
+          path: dist/assets
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-cli-*
+          path: dist/assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
+          path: dist
+      - name: Generate release checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          dist = Path("dist")
+          assets = dist / "assets"
+          manifest = json.loads((dist / "manifest.json").read_text())
+          names = {path.name for path in assets.iterdir() if path.is_file()}
+          for device in manifest["devices"]:
+              asset = device["asset"]
+              path = assets / asset
+              if asset not in names or hashlib.sha256(path.read_bytes()).hexdigest() != device["sha256sum"]:
+                  raise SystemExit(f"daemon asset does not match manifest: {asset}")
+          required = {
+              "yam-x86_64-unknown-linux-musl",
+              "yam-aarch64-apple-darwin",
+              "yam-x86_64-pc-windows-msvc.exe",
+          }
+          missing = required - names
+          if missing:
+              raise SystemExit(f"missing CLI release assets: {', '.join(sorted(missing))}")
+          (dist / "SHA256SUMS").write_text("".join(
+              f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+              for path in sorted(assets.iterdir())
+              if path.is_file()
+          ))
+          PY
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: BetterYAM ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/manifest.json
+            dist/SHA256SUMS
+            dist/assets/*
