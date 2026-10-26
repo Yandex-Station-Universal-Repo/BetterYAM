@@ -30,7 +30,7 @@ use std::{
     ffi::CStr,
     fs,
     io::{Cursor, Read},
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -461,7 +461,13 @@ impl PluginManager {
                 continue;
             };
             if fs::read_link(&path)? == self.commands_dir.join(name) && !commands.contains(name) {
-                fs::remove_file(path)?;
+                if let Err(error) = fs::remove_file(&path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "could not remove stale system command link"
+                    );
+                }
             }
         }
 
@@ -488,7 +494,13 @@ impl PluginManager {
         if commands.is_empty() {
             match fs::read_to_string(&self.profile_file) {
                 Ok(contents) if contents.starts_with(PROFILE_MARKER) => {
-                    fs::remove_file(&self.profile_file)?;
+                    if let Err(error) = fs::remove_file(&self.profile_file) {
+                        tracing::warn!(
+                            path = %self.profile_file.display(),
+                            %error,
+                            "could not remove shell profile"
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -499,14 +511,32 @@ impl PluginManager {
                 .profile_file
                 .parent()
                 .context("shell profile path has no parent directory")?;
-            fs::create_dir_all(profile_dir)?;
-            if self.profile_file.exists()
-                && !fs::read_to_string(&self.profile_file)?.starts_with(PROFILE_MARKER)
-            {
-                bail!(
-                    "refusing to overwrite unmanaged shell profile {}",
-                    self.profile_file.display()
-                )
+            if let Err(error) = fs::create_dir_all(profile_dir) {
+                tracing::warn!(
+                    path = %profile_dir.display(),
+                    %error,
+                    "shell profile directory could not be created; shell commands will not be added to PATH automatically"
+                );
+                return Ok(());
+            }
+            if self.profile_file.exists() {
+                match fs::read_to_string(&self.profile_file) {
+                    Ok(existing) if !existing.starts_with(PROFILE_MARKER) => {
+                        bail!(
+                            "refusing to overwrite unmanaged shell profile {}",
+                            self.profile_file.display()
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %self.profile_file.display(),
+                            %error,
+                            "shell profile could not be read; shell commands will not be added to PATH automatically"
+                        );
+                        return Ok(());
+                    }
+                }
             }
             let path = shell_quote(&self.commands_dir.to_string_lossy());
             let profile = format!(
@@ -518,7 +548,13 @@ impl PluginManager {
                  export PATH\n\
                  unset BETTERYAM_COMMANDS_DIR\n"
             );
-            write_atomic(&self.profile_file, profile.as_bytes())?;
+            if let Err(error) = write_atomic(&self.profile_file, profile.as_bytes()) {
+                tracing::warn!(
+                    path = %self.profile_file.display(),
+                    %error,
+                    "shell profile could not be written; shell commands will not be added to PATH automatically"
+                );
+            }
         }
         Ok(())
     }
@@ -2913,12 +2949,12 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Binary packages reach BetterYAMd on loopback unless it listens on one address only.
+/// Binary packages reach BetterYAMd on loopback.
 fn runtime_api_url(listen: &str) -> Result<String> {
     let mut address: std::net::SocketAddr = listen
         .parse()
         .with_context(|| format!("listen address {listen} must be IP:port"))?;
-    if address.ip().is_unspecified() {
+    if address.ip().is_unspecified() || !address.ip().is_loopback() {
         address.set_ip(match address {
             std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
             std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
@@ -2997,6 +3033,22 @@ async fn wait_for_lan_ipv4() -> Ipv4Addr {
     }
 }
 
+pub fn validate_listen_address(addr: &SocketAddr) -> Result<()> {
+    if addr.ip().is_unspecified() {
+        bail!(
+            "binding management listener to wildcard address ({}) is not allowed to prevent exposing management API on provisioning AP; specify a LAN IP or omit --listen",
+            addr.ip()
+        );
+    }
+    if addr.ip() == wifi_setup::AP_IP {
+        bail!(
+            "binding management listener to Wi-Fi setup AP address ({}) is not allowed",
+            wifi_setup::AP_IP
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -3021,9 +3073,19 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
     let wifi = wifi_setup::Setup::new(args.data_dir.clone(), settings.clone());
     wifi.start(tokio::runtime::Handle::current());
     let listen = match args.listen {
-        Some(listen) => listen,
+        Some(listen) => {
+            validate_listen_address(&listen)?;
+            listen
+        }
         None => SocketAddr::new(wait_for_lan_ipv4().await.into(), 8099),
     };
+    let loopback = SocketAddr::new(
+        match listen {
+            SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
+            SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
+        },
+        listen.port(),
+    );
     let led = Arc::new(Led::new(adapter)?);
     let mut device = detect_device(&args.data_dir, args.model)?;
     if device.id.is_empty() {
@@ -3057,7 +3119,7 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
             args.data_dir.join("plugins"),
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
-        runtime_api_url: runtime_api_url(&listen.to_string())?,
+        runtime_api_url: runtime_api_url(&loopback.to_string())?,
         wifi,
     };
     let services = {
@@ -3086,6 +3148,83 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
         tracing::info!("web interface is disabled");
         std::future::pending::<()>().await;
     }
+
+    if !listen.ip().is_loopback() && !listen.ip().is_unspecified() {
+        match TcpListener::bind(loopback).await {
+            Ok(loopback_listener) => {
+                let loopback_app = app.clone();
+                tokio::spawn(async move {
+                    tracing::info!("loopback runtime API: http://{}", loopback);
+                    let router = runtime_router(loopback_app)
+                        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+                        .layer(TraceLayer::new_for_http());
+                    let _ = axum::serve(loopback_listener, router).await;
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, address = %loopback, "could not bind loopback listener for runtime API");
+            }
+        }
+    }
+
+    let router = lan_router(app, &web)
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(TraceLayer::new_for_http());
+    let l = TcpListener::bind(listen).await?;
+    tracing::info!("web UI: http://{}", listen);
+    axum::serve(l, router).await?;
+    Ok(())
+}
+
+fn runtime_router(app: App) -> Router {
+    Router::new()
+        .route("/api/runtime/:id/device", get(runtime_device))
+        .route("/api/runtime/:id/sensors", get(runtime_sensors))
+        .route("/api/runtime/:id/sensors/:sensor", get(runtime_sensor_read))
+        .route("/api/runtime/:id/audio/play", post(runtime_audio_play))
+        .route("/api/runtime/:id/led", post(runtime_led))
+        .route("/api/runtime/:id/led/off", post(runtime_led_off))
+        .route("/api/runtime/:id/logo", post(runtime_logo))
+        .route("/api/runtime/:id/logo/off", post(runtime_logo_off))
+        .route(
+            "/api/runtime/:id/clock",
+            post(runtime_clock).put(runtime_clock),
+        )
+        .route(
+            "/api/runtime/:id/volume",
+            get(runtime_volume_get).put(runtime_volume_set),
+        )
+        .route(
+            "/api/runtime/:id/bluetooth/status",
+            get(runtime_bluetooth_status),
+        )
+        .route(
+            "/api/runtime/:id/bluetooth/power",
+            put(runtime_bluetooth_power),
+        )
+        .route("/api/runtime/:id/input/devices", get(runtime_input_devices))
+        .route(
+            "/api/runtime/:id/input/next-event",
+            post(runtime_input_next_event),
+        )
+        .route("/api/runtime/:id/wifi", get(runtime_wifi))
+        .route("/api/runtime/:id/wifi/scan", post(runtime_wifi_scan))
+        .route(
+            "/api/runtime/:id/wifi/networks",
+            get(runtime_wifi_networks).post(runtime_wifi_network),
+        )
+        .route(
+            "/api/runtime/:id/wifi/networks/:ssid",
+            delete(runtime_wifi_forget),
+        )
+        .route(
+            "/api/runtime/:id/wifi/setup",
+            get(runtime_wifi_setup_status).post(runtime_wifi_setup),
+        )
+        .with_state(app)
+}
+
+fn management_router(app: App, web: &WebSettings) -> Router {
     let mut router = Router::new();
     if web.ui {
         router = router.route("/", get(index));
@@ -3099,46 +3238,6 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
             .route("/api/plugins/:id/invoke", post(invoke))
             .route("/api/plugins/:id/stop", post(stop_plugin))
             .route("/api/plugins/:id/logs", get(package_logs))
-            .route("/api/runtime/:id/device", get(runtime_device))
-            .route("/api/runtime/:id/sensors", get(runtime_sensors))
-            .route("/api/runtime/:id/sensors/:sensor", get(runtime_sensor_read))
-            .route("/api/runtime/:id/audio/play", post(runtime_audio_play))
-            .route("/api/runtime/:id/led", post(runtime_led))
-            .route("/api/runtime/:id/led/off", post(runtime_led_off))
-            .route("/api/runtime/:id/logo", post(runtime_logo))
-            .route("/api/runtime/:id/logo/off", post(runtime_logo_off))
-            .route("/api/runtime/:id/clock", post(runtime_clock))
-            .route(
-                "/api/runtime/:id/volume",
-                get(runtime_volume_get).put(runtime_volume_set),
-            )
-            .route(
-                "/api/runtime/:id/bluetooth/status",
-                get(runtime_bluetooth_status),
-            )
-            .route(
-                "/api/runtime/:id/bluetooth/power",
-                put(runtime_bluetooth_power),
-            )
-            .route("/api/runtime/:id/input/devices", get(runtime_input_devices))
-            .route(
-                "/api/runtime/:id/input/next-event",
-                post(runtime_input_next_event),
-            )
-            .route("/api/runtime/:id/wifi", get(runtime_wifi))
-            .route("/api/runtime/:id/wifi/scan", post(runtime_wifi_scan))
-            .route(
-                "/api/runtime/:id/wifi/networks",
-                get(runtime_wifi_networks).post(runtime_wifi_network),
-            )
-            .route(
-                "/api/runtime/:id/wifi/networks/:ssid",
-                delete(runtime_wifi_forget),
-            )
-            .route(
-                "/api/runtime/:id/wifi/setup",
-                get(runtime_wifi_setup_status).post(runtime_wifi_setup),
-            )
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
             .route("/api/sensors", get(get_sensors))
@@ -3160,14 +3259,11 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
             .route("/api/logo", post(logo_set))
             .route("/api/logo/off", post(logo_off));
     }
-    let router = router
-        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
-        .layer(TraceLayer::new_for_http())
-        .with_state(app);
-    let l = TcpListener::bind(listen).await?;
-    tracing::info!("web UI: http://{}", listen);
-    axum::serve(l, router).await?;
-    Ok(())
+    router.with_state(app)
+}
+
+fn lan_router(app: App, web: &WebSettings) -> Router {
+    management_router(app.clone(), web).merge(runtime_router(app))
 }
 const UI: &str = include_str!("web/index.html");
 
@@ -3609,5 +3705,182 @@ path = "nano/bin/nano"
             b"system command"
         );
         fs::remove_dir_all(temporary).unwrap();
+    }
+
+    struct DummyDeviceAdapter;
+    impl device::DeviceAdapter for DummyDeviceAdapter {
+        fn profile(&self) -> device::AdapterProfile {
+            device::AdapterProfile {
+                id: "test".into(),
+                model: "test".into(),
+                led_count: 1,
+                color_order: device::ColorOrder::Rgb,
+                sensors_proximity: false,
+                sensors_ambient_light: false,
+            }
+        }
+        fn create_led_backend(&self) -> Result<Box<dyn device::LedBackend>> {
+            struct DummyLed;
+            impl device::LedBackend for DummyLed {
+                fn show(&self, _frame: &[u8]) -> Result<()> {
+                    Ok(())
+                }
+            }
+            Ok(Box::new(DummyLed))
+        }
+    }
+
+    fn test_app(dir: PathBuf) -> App {
+        fs::create_dir_all(&dir).unwrap();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let wifi = wifi_setup::Setup::new(dir.clone(), settings.clone());
+        let led = Arc::new(Led::new(DummyDeviceAdapter).unwrap());
+        App {
+            root: dir.clone(),
+            settings,
+            device: Arc::new(Mutex::new(DeviceProfile {
+                id: "test".into(),
+                model: "test".into(),
+                architecture: "aarch64".into(),
+                led_count: 1,
+                features: Vec::new(),
+                capabilities: HashMap::new(),
+                source: "test".into(),
+            })),
+            led,
+            plugins: Arc::new(Mutex::new(
+                PluginManager::with_paths(
+                    dir.join("plugins"),
+                    dir.join("bin"),
+                    dir.join("usr/bin"),
+                    dir.join("profile.d/betteryam.sh"),
+                )
+                .unwrap(),
+            )),
+            runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
+            runtime_api_url: "http://127.0.0.1:8099".into(),
+            wifi,
+        }
+    }
+
+    #[tokio::test]
+    async fn ap_facing_listener_cannot_reach_unauthenticated_management_endpoints_even_with_regular_host(
+    ) {
+        let temporary =
+            std::env::temp_dir().join(format!("betteryam-ap-portal-{}", Uuid::new_v4()));
+        let setup =
+            wifi_setup::Setup::new(temporary.clone(), Arc::new(Mutex::new(Settings::default())));
+        let ap_router = wifi_setup::portal_router(setup);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, ap_router).await;
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        let unauthenticated_management_endpoints = [
+            ("GET", "/api/plugins"),
+            ("POST", "/api/plugins"),
+            ("DELETE", "/api/plugins/test"),
+            ("POST", "/api/plugins/test/toggle"),
+            ("POST", "/api/plugins/test/invoke"),
+            ("GET", "/api/settings"),
+            ("PUT", "/api/settings"),
+            ("GET", "/api/device"),
+            ("PUT", "/api/device"),
+            ("GET", "/api/sensors"),
+            ("GET", "/api/clock"),
+            ("PUT", "/api/clock"),
+            ("POST", "/api/led"),
+            ("POST", "/api/led/off"),
+            ("GET", "/api/volume"),
+            ("PUT", "/api/volume"),
+            ("GET", "/api/bluetooth/status"),
+            ("POST", "/api/logo"),
+        ];
+
+        let regular_hosts = [
+            format!("127.0.0.1:{port}"),
+            format!("localhost:{port}"),
+            "station.local".to_string(),
+            "192.168.1.100:8099".to_string(),
+        ];
+
+        for host in regular_hosts {
+            for (method, endpoint) in unauthenticated_management_endpoints {
+                let url = format!("http://127.0.0.1:{port}{endpoint}");
+                let req = match method {
+                    "GET" => client.get(&url),
+                    "POST" => client.post(&url),
+                    "PUT" => client.put(&url),
+                    "DELETE" => client.delete(&url),
+                    _ => unreachable!(),
+                };
+                let resp = req.header("Host", &host).send().await.unwrap();
+                assert_ne!(
+                    resp.status(),
+                    reqwest::StatusCode::OK,
+                    "management endpoint {endpoint} must not return 200 OK on AP-facing listener with Host {host}"
+                );
+                assert!(
+                    resp.status().is_redirection() || resp.status().is_client_error(),
+                    "management endpoint {endpoint} on AP-facing listener returned unexpected status {} with Host {host}",
+                    resp.status()
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(temporary);
+    }
+
+    #[test]
+    fn management_listener_rejects_wildcard_and_ap_addresses() {
+        assert!(validate_listen_address(&"0.0.0.0:8099".parse().unwrap()).is_err());
+        assert!(validate_listen_address(&"[::]:8099".parse().unwrap()).is_err());
+        assert!(
+            validate_listen_address(&format!("{}:8099", wifi_setup::AP_IP).parse().unwrap())
+                .is_err()
+        );
+        assert!(validate_listen_address(&"192.168.1.50:8099".parse().unwrap()).is_ok());
+        assert!(validate_listen_address(&"127.0.0.1:8099".parse().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn loopback_runtime_router_only_serves_runtime_endpoints() {
+        let temporary =
+            std::env::temp_dir().join(format!("betteryam-runtime-router-{}", Uuid::new_v4()));
+        let app = test_app(temporary.clone());
+        let router = runtime_router(app);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        // Management route is not mounted on runtime router
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/api/plugins"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        // Runtime route is mounted (missing token returns error status, not 404)
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/api/runtime/test/device"))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let _ = fs::remove_dir_all(temporary);
     }
 }

@@ -11,6 +11,7 @@
 | --- | --- | --- | --- | --- |
 | `yandexmini` | 6 RGB-элементов | BGR | Поддерживается профилем | Нет |
 | `yandexmicro` (Station Lite) | 3 RGB-элемента | RGB | Не поддерживается | Нет |
+| `yandexmini2` (Station Mini 2) | 6 RGB-элементов | RGB | Не поддерживается | 4 цифры, 34 сегмента (при наличии) |
 | `yandexmini3` (Station Mini 3) | 6 RGB-элементов | BGR | Не поддерживается | 4 цифры, 32 сегмента |
 
 Mini использует собственный I2C backend; Lite записывает значения в
@@ -36,6 +37,19 @@ capabilities из `GET /api/device` или соответствующий мет
 питанием — отдельные возможности; объявляйте scan, pair и connect только при
 наличии подходящего backend. Аналогично проверяйте capabilities для громкости,
 аудио, дисплея, часов, input, IPC и Wi-Fi.
+
+## Yandex Mini 2
+
+Daemon `yandexmini2` выбирается по hostname `yandex-mini2-XXXX` (manifest ID `yandex-mini2`). Архитектура ядра и userland — AArch64, daemon собирается статическим `aarch64-unknown-linux-musl`.
+
+- **LED ring:** `led.ring.rgb`, `led.ring.6`, `led.pattern.v1`. Кольцо — 6 RGB-светодиодов через sysfs `/sys/class/leds/mini2:{red,green,blue}:ring{1..6}/brightness` в порядке RGB.
+- **Часы (где есть):** `clock`, `clock.time`, `clock.segments`, `clock.off` и feature `display.clock.segment.v1`, если в sysfs присутствуют узлы `/sys/class/leds/mini2:white:clock*` (на моделях без часов адаптер отключает `clock.*` автоматически). Сегменты: `A1`…`G4` (4 позиции), `DEGREE`, `MINUS`, `PLUS1`, `PLUS2` (двоеточие), `PLUS3`, `PLUS4`. `off` восстанавливает штатный вывод времени из `clock_display_settings.dat` и `geosync.state`.
+- **Громкость:** ALSA Master (0..255).
+- **Аудио:** `aplay` в ALSA dmix.
+- **Сенсоры:** IIO-датчик освещённости LTR-308 (`/sys/bus/iio/devices/iio:device0/in_intensity_input`), `kind: "ambient_light"`, `unit: "lux"`, capability `sensors.ambient_light`.
+- **Input:** кнопки через `/dev/input/event*`.
+- **Bluetooth:** `bluetooth.status` через rfkill / BlueZ.
+- **Wi-Fi:** `wpa_cli`.
 
 ## Yandex Mini 3
 
