@@ -241,6 +241,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "betteryamd-yandexmini3"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "betteryam-runtime",
+ "serde_json",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
