@@ -2695,7 +2695,7 @@ async fn get_clock(State(a): State<App>) -> Result<Json<ClockInfo>, ApiError> {
     let device = a.device.lock().await;
     Ok(Json(ClockInfo {
         available: capability_available(&device, "clock"),
-        segments: Vec::new(),
+        segments: a.led.clock_segments(),
     }))
 }
 async fn put_clock(
