@@ -14,6 +14,21 @@
       "target": "armv7-unknown-linux-musleabihf",
       "filepath": "dist/assets/betteryamd-yandexmini-armv7-linux",
       "sha256sum": null
+    },
+    {
+      "device": "yandexmicro",
+      "models": [
+        "yandexmicro",
+        "yandex-station-lite",
+        "yandexstationmicro",
+        "yndx-00025"
+      ],
+      "manifest_path": "yandexmicro/Cargo.toml",
+      "binary": "betteryamd-yandexmicro",
+      "asset": "betteryamd-yandexmicro-aarch64-linux",
+      "target": "aarch64-unknown-linux-musl",
+      "filepath": "dist/assets/betteryamd-yandexmicro-aarch64-linux",
+      "sha256sum": null
     }
   ]
 }

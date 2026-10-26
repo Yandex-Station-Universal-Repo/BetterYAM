@@ -1,0 +1,16 @@
+[Unit]
+Description=BetterYAMd Yandex Station Lite device daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/data/quazar/betteryam/bin/betteryamd --data-dir /data/quazar/betteryam/data
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
