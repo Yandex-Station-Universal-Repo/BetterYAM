@@ -461,7 +461,13 @@ impl PluginManager {
                 continue;
             };
             if fs::read_link(&path)? == self.commands_dir.join(name) && !commands.contains(name) {
-                fs::remove_file(path)?;
+                if let Err(error) = fs::remove_file(&path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "could not remove stale system command link"
+                    );
+                }
             }
         }
 
@@ -488,7 +494,13 @@ impl PluginManager {
         if commands.is_empty() {
             match fs::read_to_string(&self.profile_file) {
                 Ok(contents) if contents.starts_with(PROFILE_MARKER) => {
-                    fs::remove_file(&self.profile_file)?;
+                    if let Err(error) = fs::remove_file(&self.profile_file) {
+                        tracing::warn!(
+                            path = %self.profile_file.display(),
+                            %error,
+                            "could not remove shell profile"
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -499,14 +511,32 @@ impl PluginManager {
                 .profile_file
                 .parent()
                 .context("shell profile path has no parent directory")?;
-            fs::create_dir_all(profile_dir)?;
-            if self.profile_file.exists()
-                && !fs::read_to_string(&self.profile_file)?.starts_with(PROFILE_MARKER)
-            {
-                bail!(
-                    "refusing to overwrite unmanaged shell profile {}",
-                    self.profile_file.display()
-                )
+            if let Err(error) = fs::create_dir_all(profile_dir) {
+                tracing::warn!(
+                    path = %profile_dir.display(),
+                    %error,
+                    "shell profile directory could not be created; shell commands will not be added to PATH automatically"
+                );
+                return Ok(());
+            }
+            if self.profile_file.exists() {
+                match fs::read_to_string(&self.profile_file) {
+                    Ok(existing) if !existing.starts_with(PROFILE_MARKER) => {
+                        bail!(
+                            "refusing to overwrite unmanaged shell profile {}",
+                            self.profile_file.display()
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %self.profile_file.display(),
+                            %error,
+                            "shell profile could not be read; shell commands will not be added to PATH automatically"
+                        );
+                        return Ok(());
+                    }
+                }
             }
             let path = shell_quote(&self.commands_dir.to_string_lossy());
             let profile = format!(
@@ -518,7 +548,13 @@ impl PluginManager {
                  export PATH\n\
                  unset BETTERYAM_COMMANDS_DIR\n"
             );
-            write_atomic(&self.profile_file, profile.as_bytes())?;
+            if let Err(error) = write_atomic(&self.profile_file, profile.as_bytes()) {
+                tracing::warn!(
+                    path = %self.profile_file.display(),
+                    %error,
+                    "shell profile could not be written; shell commands will not be added to PATH automatically"
+                );
+            }
         }
         Ok(())
     }
@@ -3022,7 +3058,10 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
     wifi.start(tokio::runtime::Handle::current());
     let listen = match args.listen {
         Some(listen) => listen,
-        None => SocketAddr::new(wait_for_lan_ipv4().await.into(), 8099),
+        None => {
+            let _ = wait_for_lan_ipv4().await;
+            SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), 8099)
+        }
     };
     let led = Arc::new(Led::new(adapter)?);
     let mut device = detect_device(&args.data_dir, args.model)?;
@@ -3107,7 +3146,10 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
             .route("/api/runtime/:id/led/off", post(runtime_led_off))
             .route("/api/runtime/:id/logo", post(runtime_logo))
             .route("/api/runtime/:id/logo/off", post(runtime_logo_off))
-            .route("/api/runtime/:id/clock", post(runtime_clock))
+            .route(
+                "/api/runtime/:id/clock",
+                post(runtime_clock).put(runtime_clock),
+            )
             .route(
                 "/api/runtime/:id/volume",
                 get(runtime_volume_get).put(runtime_volume_set),
