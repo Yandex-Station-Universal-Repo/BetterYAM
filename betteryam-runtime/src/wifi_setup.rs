@@ -839,15 +839,8 @@ fn dns_server(stop: Arc<AtomicBool>) -> Result<thread::JoinHandle<()>> {
 /// The setup page and its API on the access point's address. Any other
 /// path (a phone's connectivity probe: /generate_204, /hotspot-detect.html,
 /// ...) is sent to the page.
-fn portal(
-    runtime: &tokio::runtime::Handle,
-    port: u16,
-    setup: Arc<Setup>,
-) -> Result<tokio::task::JoinHandle<()>> {
-    let listener = runtime
-        .block_on(tokio::net::TcpListener::bind((AP_IP, port)))
-        .with_context(|| format!("listen on {AP_IP}:{port}"))?;
-    let router = Router::new()
+pub fn portal_router(setup: Arc<Setup>) -> Router {
+    Router::new()
         .route("/", get(|| async { Html(PAGE) }))
         .route("/api/wifi", get(portal_status))
         .route("/api/wifi/scan", post(portal_scan))
@@ -858,7 +851,18 @@ fn portal(
             get(portal_setup_status).post(portal_setup),
         )
         .fallback(|| async { Redirect::temporary(&format!("http://{AP_IP}/")) })
-        .with_state(setup);
+        .with_state(setup)
+}
+
+fn portal(
+    runtime: &tokio::runtime::Handle,
+    port: u16,
+    setup: Arc<Setup>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind((AP_IP, port)))
+        .with_context(|| format!("listen on {AP_IP}:{port}"))?;
+    let router = portal_router(setup);
     Ok(runtime.spawn(async move {
         let _ = axum::serve(listener, router).await;
     }))
