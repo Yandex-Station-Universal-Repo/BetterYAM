@@ -1,0 +1,13 @@
+[package]
+name = "betteryamd-yandexmini2"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "betteryamd-yandexmini2"
+path = "main.rs"
+
+[dependencies]
+anyhow = "1"
+betteryam-runtime = { path = "../betteryam-runtime" }
+serde_json = "1"

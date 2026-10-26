@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "betteryam-runtime", "yandexmini", "yandexmicro", "yandexmini3"]
+members = [".", "betteryam-runtime", "yandexmini", "yandexmicro", "yandexmini3", "yandexmini2"]
 default-members = ["."]
 resolver = "2"
 

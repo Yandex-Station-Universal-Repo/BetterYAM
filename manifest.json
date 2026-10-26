@@ -41,6 +41,23 @@
       "target": "aarch64-unknown-linux-musl",
       "filepath": "dist/assets/betteryamd-yandexmini3-aarch64-linux",
       "sha256sum": null
+    },
+    {
+      "device": "yandexmini2",
+      "models": [
+        "yandex-mini2",
+        "yandexmini2",
+        "yandexmini_2",
+        "station-mini2",
+        "yndx-00020",
+        "yndx-00021"
+      ],
+      "manifest_path": "yandexmini2/Cargo.toml",
+      "binary": "betteryamd-yandexmini2",
+      "asset": "betteryamd-yandexmini2-aarch64-linux",
+      "target": "aarch64-unknown-linux-musl",
+      "filepath": "dist/assets/betteryamd-yandexmini2-aarch64-linux",
+      "sha256sum": null
     }
   ]
 }
