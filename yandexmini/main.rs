@@ -298,6 +298,7 @@ struct Invocation {
 struct PluginManager {
     root: PathBuf,
     commands_dir: PathBuf,
+    system_commands_dir: PathBuf,
     profile_file: PathBuf,
     enabled: HashSet<String>,
     running: HashMap<String, Arc<AtomicBool>>,
@@ -320,6 +321,7 @@ impl PluginManager {
         let mut manager = Self {
             root,
             commands_dir,
+            system_commands_dir: PathBuf::from("/usr/bin"),
             profile_file: PathBuf::from("/etc/profile.d/betteryam.sh"),
             enabled,
             running: HashMap::new(),
@@ -328,11 +330,18 @@ impl PluginManager {
         Ok(manager)
     }
     #[cfg(test)]
-    fn with_paths(root: PathBuf, commands_dir: PathBuf, profile_file: PathBuf) -> Result<Self> {
+    fn with_paths(
+        root: PathBuf,
+        commands_dir: PathBuf,
+        system_commands_dir: PathBuf,
+        profile_file: PathBuf,
+    ) -> Result<Self> {
         fs::create_dir_all(&root)?;
+        fs::create_dir_all(&system_commands_dir)?;
         let mut manager = Self {
             root: fs::canonicalize(root)?,
             commands_dir,
+            system_commands_dir,
             profile_file,
             enabled: HashSet::new(),
             running: HashMap::new(),
@@ -407,7 +416,57 @@ impl PluginManager {
                 command_wrapper(&manifest, &package_root)?.as_bytes(),
             )?;
             set_executable(&wrapper)?;
+
+            let system_command = self.system_commands_dir.join(&manifest.id);
+            match fs::symlink_metadata(&system_command) {
+                Ok(metadata)
+                    if metadata.file_type().is_symlink()
+                        && fs::read_link(&system_command)? == wrapper =>
+                {
+                    // This package's managed link already exists.
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        package = %manifest.id,
+                        path = %system_command.display(),
+                        "shell command conflicts with an existing system command; keeping system command"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    #[cfg(unix)]
+                    if let Err(error) = std::os::unix::fs::symlink(&wrapper, &system_command) {
+                        tracing::warn!(
+                            package = %manifest.id,
+                            path = %system_command.display(),
+                            %error,
+                            "package installed, but shell command could not be exposed in the system PATH"
+                        );
+                    }
+                    #[cfg(not(unix))]
+                    tracing::warn!(
+                        package = %manifest.id,
+                        path = %system_command.display(),
+                        "package installed, but shell command symlinks are unsupported on this platform"
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            }
             commands.insert(manifest.id);
+        }
+
+        for entry in fs::read_dir(&self.system_commands_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if fs::read_link(&path)? == self.commands_dir.join(name) && !commands.contains(name) {
+                fs::remove_file(path)?;
+            }
         }
 
         for entry in fs::read_dir(&self.commands_dir)? {
@@ -790,14 +849,57 @@ fn compatibility_error(m: &Manifest, d: &DeviceProfile) -> Option<String> {
         Some(format!("missing feature(s): {}", missing.join(", ")))
     }
 }
-fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
+fn architecture_from_uname(machine: &str) -> String {
+    match machine.trim() {
+        "aarch64" | "aarch64_be" => "aarch64".into(),
+        "armv6l" | "armv7l" | "armv8l" => "armhf".into(),
+        machine => machine.into(),
+    }
+}
+fn host_architecture() -> Result<String> {
+    let output = Command::new("uname")
+        .arg("-m")
+        .output()
+        .context("detect host CPU architecture with uname -m")?;
+    if !output.status.success() {
+        bail!(
+            "uname -m failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+    let machine =
+        String::from_utf8(output.stdout).context("uname -m returned non-UTF-8 architecture")?;
+    if machine.trim().is_empty() {
+        bail!("uname -m returned an empty architecture")
+    }
+    Ok(architecture_from_uname(&machine))
+}
+fn set_device_architecture(device: &mut DeviceProfile, architecture: String) {
+    device.architecture = architecture;
+    device
+        .features
+        .retain(|feature| !feature.starts_with("arch."));
+    device
+        .capabilities
+        .retain(|capability, _| !capability.starts_with("arch."));
+    let feature = format!("arch.{}", device.architecture);
+    device.features.push(feature.clone());
+    device.capabilities.insert(feature, true);
+}
+fn detect_device(root: &Path, forced: Option<String>) -> Result<DeviceProfile> {
+    let architecture = host_architecture()?;
     if let Ok(raw) = fs::read_to_string(root.join("device.toml")) {
         if let Ok(mut p) = toml::from_str::<DeviceProfile>(&raw) {
+            let architecture = if p.architecture.is_empty() {
+                architecture
+            } else {
+                architecture_from_uname(&p.architecture)
+            };
+            set_device_architecture(&mut p, architecture);
             populate_capabilities(&mut p);
-            return p;
+            return Ok(p);
         }
     }
-    let arch = std::env::consts::ARCH.to_string();
     let hostname = forced.unwrap_or_else(|| {
         Command::new("uname")
             .arg("-n")
@@ -809,24 +911,19 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             .unwrap_or_else(|| "unknown".into())
     });
     let model = strip_device_id(&hostname);
-    let mut features = vec!["runtime.lua.v1".into(), "plugin.yap.v1".into()];
-    if arch.starts_with("arm") {
-        features.push("arch.armhf".into())
-    };
-    if arch == "aarch64" {
-        features.push("arch.aarch64".into())
-    }
+    let features = vec!["runtime.lua.v1".into(), "plugin.yap.v1".into()];
     let mut profile = DeviceProfile {
         id: device_identifier(&model),
         model,
-        architecture: arch,
+        architecture: architecture.clone(),
         led_count: 0,
         features,
         capabilities: HashMap::new(),
         source: "runtime (device capabilities supplied by standard Device API)".into(),
     };
+    set_device_architecture(&mut profile, architecture);
     populate_capabilities(&mut profile);
-    profile
+    Ok(profile)
 }
 fn apply_device_info(device: &mut DeviceProfile, info: DeviceInfo) {
     if !info.id.is_empty() {
@@ -835,12 +932,10 @@ fn apply_device_info(device: &mut DeviceProfile, info: DeviceInfo) {
     if !info.model.is_empty() {
         device.model = info.model;
     }
-    if !info.architecture.is_empty() {
-        device.architecture = info.architecture;
-    }
     device.led_count = info.led_count;
     device.features = info.features;
     device.capabilities = info.capabilities;
+    set_device_architecture(device, device.architecture.clone());
     populate_capabilities(device);
     for feature in ["runtime.lua.v1", "plugin.yap.v1"] {
         if !device.features.iter().any(|present| present == feature) {
@@ -2925,7 +3020,7 @@ async fn main() -> Result<()> {
         None => SocketAddr::new(wait_for_lan_ipv4().await.into(), 8099),
     };
     let led = Arc::new(Led::new()?);
-    let mut device = detect_device(&args.data_dir, args.model);
+    let mut device = detect_device(&args.data_dir, args.model)?;
     if device.id.is_empty() {
         device.id = device_identifier(&device.model);
     }
@@ -3131,13 +3226,15 @@ mod tests {
 
     #[test]
     fn device_api_profile_drives_capabilities_and_led_count() {
-        let mut device = DeviceProfile::default();
+        let mut device = DeviceProfile {
+            architecture: "aarch64".into(),
+            ..DeviceProfile::default()
+        };
         apply_device_info(
             &mut device,
             DeviceInfo {
                 id: "other-device".into(),
                 model: "Other Device".into(),
-                architecture: "aarch64".into(),
                 led_count: 12,
                 features: vec!["led.ring.rgb".into(), "led.ring.12".into()],
                 capabilities: HashMap::new(),
@@ -3145,17 +3242,51 @@ mod tests {
         );
         assert_eq!(device.id, "other-device");
         assert_eq!(device.led_count, 12);
-        assert_eq!(
-            device.features,
-            [
-                "led.ring.rgb",
-                "led.ring.12",
-                "runtime.lua.v1",
-                "plugin.yap.v1"
-            ]
-        );
+        assert!(device
+            .features
+            .iter()
+            .any(|feature| feature == "arch.aarch64"));
+        assert_eq!(device.architecture, "aarch64");
+        assert!(device
+            .features
+            .iter()
+            .any(|feature| feature == "led.ring.rgb"));
         assert_eq!(device.capabilities.get("led.ring.rgb"), Some(&true));
         assert_eq!(device.capabilities.get("clock.segments"), Some(&false));
+    }
+
+    #[test]
+    fn architecture_detection_is_owned_by_the_device_profile() {
+        assert_eq!(architecture_from_uname("aarch64\n"), "aarch64");
+        assert_eq!(architecture_from_uname("armv6l\n"), "armhf");
+        assert_eq!(architecture_from_uname("armv7l\n"), "armhf");
+        assert_eq!(architecture_from_uname("x86_64\n"), "x86_64");
+
+        let mut device = DeviceProfile {
+            architecture: "aarch64".into(),
+            features: vec!["arch.armhf".into(), "led.ring.rgb".into()],
+            capabilities: HashMap::from([("arch.armhf".into(), true)]),
+            ..DeviceProfile::default()
+        };
+        apply_device_info(
+            &mut device,
+            DeviceInfo {
+                features: vec!["led.ring.rgb".into()],
+                capabilities: HashMap::from([("arch.armhf".into(), true)]),
+                ..DeviceInfo::default()
+            },
+        );
+        assert_eq!(device.architecture, "aarch64");
+        assert!(device
+            .features
+            .iter()
+            .any(|feature| feature == "arch.aarch64"));
+        assert!(!device
+            .features
+            .iter()
+            .any(|feature| feature == "arch.armhf"));
+        assert_eq!(device.capabilities.get("arch.aarch64"), Some(&true));
+        assert!(!device.capabilities.contains_key("arch.armhf"));
     }
 
     #[test]
@@ -3261,9 +3392,15 @@ args = ["--flag with space"]
         .unwrap();
 
         let commands = temporary.join("bin");
+        let system_commands = temporary.join("usr/bin");
         let profile = temporary.join("profile.d/betteryam.sh");
-        let mut manager =
-            PluginManager::with_paths(plugins.clone(), commands.clone(), profile.clone()).unwrap();
+        let mut manager = PluginManager::with_paths(
+            plugins.clone(),
+            commands.clone(),
+            system_commands.clone(),
+            profile.clone(),
+        )
+        .unwrap();
         let wrapper = fs::read_to_string(commands.join("nano")).unwrap();
         assert!(wrapper.starts_with(COMMAND_WRAPPER_MARKER));
         assert!(wrapper.contains("nano/bin/nano"));
@@ -3272,6 +3409,10 @@ args = ["--flag with space"]
         assert!(fs::read_to_string(&profile)
             .unwrap()
             .contains(&commands.display().to_string()));
+        assert_eq!(
+            fs::read_link(system_commands.join("nano")).unwrap(),
+            commands.join("nano")
+        );
 
         let output = std::process::Command::new(commands.join("nano"))
             .arg("user arg")
@@ -3297,8 +3438,20 @@ args = ["--flag with space"]
         assert!(path_output.status.success());
         assert_eq!(String::from_utf8(path_output.stdout).unwrap(), "included");
 
+        let shell_command_output = std::process::Command::new("/bin/sh")
+            .args(["-c", "nano 'user arg'"])
+            .env("PATH", format!("{}:/bin", system_commands.display()))
+            .output()
+            .unwrap();
+        assert!(shell_command_output.status.success());
+        assert_eq!(
+            String::from_utf8(shell_command_output.stdout).unwrap(),
+            "<--flag with space>\n<user arg>\n"
+        );
+
         manager.remove("nano").unwrap();
         assert!(!commands.join("nano").exists());
+        assert!(!system_commands.join("nano").exists());
         assert!(!profile.exists());
         fs::remove_dir_all(temporary).unwrap();
     }
@@ -3327,18 +3480,65 @@ path = "nano/bin/nano"
         )
         .unwrap();
         let commands = temporary.join("bin");
+        let system_commands = temporary.join("usr/bin");
         fs::create_dir_all(&commands).unwrap();
         fs::write(commands.join("nano"), "user-owned command").unwrap();
 
         let result = PluginManager::with_paths(
             plugins,
             commands.clone(),
+            system_commands.clone(),
             temporary.join("profile.d/betteryam.sh"),
         );
         assert!(result.is_err());
         assert_eq!(
             fs::read_to_string(commands.join("nano")).unwrap(),
             "user-owned command"
+        );
+        assert!(!system_commands.join("nano").exists());
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[test]
+    fn binary_command_sync_preserves_system_commands() {
+        let temporary =
+            std::env::temp_dir().join(format!("betteryam-path-system-{}", Uuid::new_v4()));
+        let plugins = temporary.join("plugins");
+        let package = plugins.join("nano");
+        fs::create_dir_all(package.join("nano/bin")).unwrap();
+        fs::write(package.join("nano/bin/nano"), b"binary").unwrap();
+        fs::write(
+            package.join("plugin.toml"),
+            r#"
+id = "nano"
+name = "Nano"
+version = "1.0.0"
+entry = "launch.lua"
+permissions = ["exec"]
+
+[launch]
+kind = "binary"
+path = "nano/bin/nano"
+"#,
+        )
+        .unwrap();
+        let commands = temporary.join("bin");
+        let system_commands = temporary.join("usr/bin");
+        fs::create_dir_all(&system_commands).unwrap();
+        fs::write(system_commands.join("nano"), b"system command").unwrap();
+
+        let _manager = PluginManager::with_paths(
+            plugins,
+            commands.clone(),
+            system_commands.clone(),
+            temporary.join("profile.d/betteryam.sh"),
+        )
+        .unwrap();
+
+        assert!(commands.join("nano").is_file());
+        assert_eq!(
+            fs::read(system_commands.join("nano")).unwrap(),
+            b"system command"
         );
         fs::remove_dir_all(temporary).unwrap();
     }

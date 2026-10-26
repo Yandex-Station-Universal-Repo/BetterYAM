@@ -35,7 +35,6 @@ fn frame_delay() -> u64 {
 pub struct DeviceInfo {
     pub id: String,
     pub model: String,
-    pub architecture: String,
     pub led_count: usize,
     pub features: Vec<String>,
     pub capabilities: HashMap<String, bool>,
@@ -78,7 +77,6 @@ impl Led {
         let mut features = vec![
             "runtime.lua.v1".into(),
             "plugin.yap.v1".into(),
-            format!("arch.{}", std::env::consts::ARCH),
             "led.ring.rgb".into(),
             format!("led.ring.{LED_COUNT}"),
             "led.pattern.v1".into(),
@@ -127,7 +125,6 @@ impl Led {
             ]);
         }
         let capabilities = HashMap::from([
-            (format!("arch.{}", std::env::consts::ARCH), true),
             ("led".into(), true),
             ("led.off".into(), true),
             ("led.ring".into(), true),
@@ -164,7 +161,6 @@ impl Led {
         Ok(DeviceInfo {
             id: "yandexmini".into(),
             model: String::new(),
-            architecture: std::env::consts::ARCH.into(),
             led_count: LED_COUNT,
             features,
             capabilities,

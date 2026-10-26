@@ -1,0 +1,77 @@
+#!/bin/sh
+# Managed by BetterYAM
+set -eu
+
+root=/data/quazar/betteryam
+binary=$root/bin/betteryamd
+pidfile=$root/betteryamd.pid
+
+start_daemon() {
+    mount -o remount,rw / || {
+        echo "BetterYAMd: could not remount / read-write" >&2
+        return 1
+    }
+    mount | grep ' on / ' | grep -q '(rw' || {
+        echo "BetterYAMd: root filesystem is not writable" >&2
+        return 1
+    }
+    if [ ! -x "$binary" ]; then
+        echo "BetterYAMd: daemon binary is missing: $binary" >&2
+        return 1
+    fi
+    mkdir -p "$root/data"
+    if [ -f "$pidfile" ]; then
+        pid=$(cat "$pidfile")
+        case "$pid" in
+            ''|*[!0-9]*) rm -f "$pidfile" ;;
+            *)
+                if kill -0 "$pid" 2>/dev/null; then
+                    return 0
+                fi
+                rm -f "$pidfile"
+                ;;
+        esac
+    fi
+    start-stop-daemon --start --background --make-pidfile \
+        --pidfile "$pidfile" --startas "$binary" -- \
+        --data-dir "$root/data"
+}
+
+stop_daemon() {
+    if [ ! -f "$pidfile" ]; then
+        return 0
+    fi
+    pid=$(cat "$pidfile")
+    case "$pid" in
+        ''|*[!0-9]*)
+            echo "BetterYAMd: invalid pid file: $pidfile" >&2
+            return 1
+            ;;
+    esac
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid"
+        attempt=0
+        while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
+            sleep 0.1
+            attempt=$((attempt + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "BetterYAMd: process $pid did not stop" >&2
+            return 1
+        fi
+    fi
+    rm -f "$pidfile"
+}
+
+case "${1:-start}" in
+    start) start_daemon ;;
+    stop) stop_daemon ;;
+    restart)
+        stop_daemon
+        start_daemon
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}" >&2
+        exit 2
+        ;;
+esac

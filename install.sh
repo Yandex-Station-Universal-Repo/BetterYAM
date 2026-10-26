@@ -34,6 +34,14 @@ esac
 
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/betteryam.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+run_remote_script() {
+  remote_script="/tmp/betteryam-install-$$.sh"
+  local_script="$tmpdir/remote-script.sh"
+  cat >"$local_script"
+  adb -s "$DEVICE" push "$local_script" "$remote_script" </dev/null >/dev/null
+  adb -s "$DEVICE" shell \
+    "sh '$remote_script'; result=\$?; rm -f '$remote_script'; exit \$result" </dev/null
+}
 download() {
   url=$1 output=$2
   log "Downloading $(basename "$output") from $url"
@@ -137,8 +145,43 @@ esac
 [ -n "$STATION_IP" ] || { echo 'IP address is required.' >&2; exit 6; }
 
 if [ "$ACTION" = uninstall ]; then
+  run_remote_script <<'REMOTE'
+set -eu
+mount -o remount,rw /
+mount | grep ' on / ' | grep -q '(rw' || {
+    echo "Root filesystem is not writable after remount." >&2
+    exit 1
+}
+root=/data/quazar/betteryam
+init=/etc/init.d/S99zzbetteryam
+if [ -f "$init" ]; then
+    if ! grep -q '^# Managed by BetterYAM$' "$init"; then
+        echo "Refusing to remove unmanaged init script: $init" >&2
+        exit 1
+    fi
+    "$init" stop
+    rm -f "$init"
+elif [ -f "$root/betteryamd.pid" ]; then
+    pid=$(cat "$root/betteryamd.pid")
+    case "$pid" in
+        ''|*[!0-9]*) echo "Invalid BetterYAMd pid file" >&2; exit 1 ;;
+    esac
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid"
+        attempt=0
+        while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
+            sleep 0.1
+            attempt=$((attempt + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "BetterYAMd did not stop" >&2
+            exit 1
+        fi
+    fi
+fi
+rm -rf "$root"
+REMOTE
   rm -f "$BIN_DIR/byam" "$BIN_DIR/byam-bin" "$BIN_DIR/yam"
-  adb -s "$DEVICE" shell "if [ -f $DEVICE_PREFIX/betteryamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/betteryamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/betteryamd.pid); fi; rm -rf $DEVICE_PREFIX" </dev/null
   echo "YAM removed from $BIN_DIR and $DEVICE ($DEVICE_PREFIX)."
   exit 0
 fi
@@ -203,9 +246,157 @@ cat >"$BIN_DIR/yam" <<EOF
 exec "$BIN_DIR/byam" "\$@"
 EOF
 chmod 0755 "$BIN_DIR/yam"
-adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data" </dev/null
+cat >"$tmpdir/betteryamd.init" <<'INIT'
+#!/bin/sh
+# Managed by BetterYAM
+set -eu
+
+root=/data/quazar/betteryam
+binary=$root/bin/betteryamd
+pidfile=$root/betteryamd.pid
+
+start_daemon() {
+    mount -o remount,rw / || {
+        echo "BetterYAMd: could not remount / read-write" >&2
+        return 1
+    }
+    mount | grep ' on / ' | grep -q '(rw' || {
+        echo "BetterYAMd: root filesystem is not writable" >&2
+        return 1
+    }
+    if [ ! -x "$binary" ]; then
+        echo "BetterYAMd: daemon binary is missing: $binary" >&2
+        return 1
+    fi
+    mkdir -p "$root/data"
+    if [ -f "$pidfile" ]; then
+        pid=$(cat "$pidfile")
+        case "$pid" in
+            ''|*[!0-9]*) rm -f "$pidfile" ;;
+            *)
+                if kill -0 "$pid" 2>/dev/null; then
+                    return 0
+                fi
+                rm -f "$pidfile"
+                ;;
+        esac
+    fi
+    start-stop-daemon --start --background --make-pidfile \
+        --pidfile "$pidfile" --startas "$binary" -- \
+        --data-dir "$root/data"
+}
+
+stop_daemon() {
+    if [ ! -f "$pidfile" ]; then
+        return 0
+    fi
+    pid=$(cat "$pidfile")
+    case "$pid" in
+        ''|*[!0-9]*)
+            echo "BetterYAMd: invalid pid file: $pidfile" >&2
+            return 1
+            ;;
+    esac
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid"
+        attempt=0
+        while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
+            sleep 0.1
+            attempt=$((attempt + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "BetterYAMd: process $pid did not stop" >&2
+            return 1
+        fi
+    fi
+    rm -f "$pidfile"
+}
+
+case "${1:-start}" in
+    start) start_daemon ;;
+    stop) stop_daemon ;;
+    restart)
+        stop_daemon
+        start_daemon
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}" >&2
+        exit 2
+        ;;
+esac
+INIT
+run_remote_script <<'REMOTE'
+set -eu
+mount -o remount,rw /
+mount | grep ' on / ' | grep -q '(rw' || {
+    echo "Root filesystem is not writable after remount." >&2
+    exit 1
+}
+mkdir -p /data/quazar/betteryam/bin /data/quazar/betteryam/data
+REMOTE
 adb -s "$DEVICE" push "$tmpdir/$DAEMON_ASSET" "$DEVICE_PREFIX/bin/betteryamd.new" </dev/null >/dev/null
-adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/betteryamd.new; if [ -f $DEVICE_PREFIX/betteryamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/betteryamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/betteryamd.pid); fi; mv $DEVICE_PREFIX/bin/betteryamd.new $DEVICE_PREFIX/bin/betteryamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/betteryamd.pid --startas $DEVICE_PREFIX/bin/betteryamd -- --data-dir $DEVICE_PREFIX/data" </dev/null
+adb -s "$DEVICE" push "$tmpdir/betteryamd.init" "$DEVICE_PREFIX/betteryamd.init.new" </dev/null >/dev/null
+run_remote_script <<'REMOTE'
+set -eu
+root=/data/quazar/betteryam
+binary=$root/bin/betteryamd
+staged=$root/bin/betteryamd.new
+backup=$root/bin/betteryamd.previous
+staged_init=$root/betteryamd.init.new
+init=/etc/init.d/S99zzbetteryam
+pidfile=$root/betteryamd.pid
+
+if [ -e "$init" ] && ! grep -q '^# Managed by BetterYAM$' "$init"; then
+    echo "Refusing to replace unmanaged init script: $init" >&2
+    exit 1
+fi
+chmod 0755 "$staged" "$staged_init"
+if [ -x "$init" ]; then
+    "$init" stop
+elif [ -f "$pidfile" ]; then
+    pid=$(cat "$pidfile")
+    case "$pid" in
+        ''|*[!0-9]*) echo "Invalid BetterYAMd pid file" >&2; exit 1 ;;
+    esac
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid"
+        attempt=0
+        while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
+            sleep 0.1
+            attempt=$((attempt + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "BetterYAMd did not stop" >&2
+            exit 1
+        fi
+    fi
+    rm -f "$pidfile"
+fi
+if [ -f "$binary" ]; then
+    cp "$binary" "$backup"
+fi
+mv "$staged" "$binary"
+mv "$staged_init" "$init"
+if "$init" start; then
+    sleep 1
+    pid=$(cat "$pidfile" 2>/dev/null || true)
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exit 0
+            fi
+            ;;
+    esac
+fi
+echo "BetterYAMd failed to start; restoring previous binary." >&2
+"$init" stop || true
+if [ -f "$backup" ]; then
+    mv "$backup" "$binary"
+    "$init" start
+fi
+exit 1
+REMOTE
 
 echo "BetterYAM $VERSION CLI installed in $BIN_DIR/byam (yam alias also available)"
-echo "BetterYAMd ($DAEMON_FILEPATH) for $STATION_MODEL deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"
+echo "BetterYAMd ($DAEMON_FILEPATH) for $STATION_MODEL deployed to $DEVICE ($DEVICE_PREFIX). Boot startup installed at /etc/init.d/S99zzbetteryam. Open http://$STATION_IP:8099"

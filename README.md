@@ -88,7 +88,11 @@ BetterYAM — самостоятельный форк/runtime, а не офиц�
 ### macOS и Linux
 
 Установщик загрузит CLI на компьютер и подходящий опубликованный daemon на
-Станцию:
+Станцию. Перед записью он автоматически перемонтирует `/` в `rw`, установит
+startup hook `/etc/init.d/S99zzbetteryam` и запустит BetterYAMd. При включении
+станции BusyBox init выполнит hook: он повторно перемонтирует `/` в `rw` и
+запустит daemon в фоне. Hook выполняется после остальных `S99`-скриптов;
+скрипт установки отказывается перезаписывать чужой файл с таким именем.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh
@@ -186,11 +190,15 @@ Lua-плагины продолжают получать `alice`, `device` и `e
 
 После установки binary-пакет с permission `exec` становится shell-командой с
 именем своего package ID (например, `byam install nano` → `nano`). BetterYAM
-создаёт wrapper в `/data/quazar/betteryam/data/bin` и добавляет каталог в
-`PATH` интерактивной shell через `/etc/profile.d/betteryam.sh`; откройте новую
-ADB shell-сессию после установки. Если системный `PATH` уже содержит такую
-команду, системная команда имеет приоритет. Binary-пакеты запускаются с
-правами пользователя shell, поэтому устанавливайте только доверенные пакеты.
+создаёт wrapper в `/data/quazar/betteryam/data/bin` и ссылку в `/usr/bin`,
+который входит в исходный `PATH` BusyBox shell, в том числе `adb shell`, если
+системная файловая система доступна для записи.
+Каталог wrapper-ов также добавляется через `/etc/profile.d/betteryam.sh` для
+login shell. Если `/usr/bin/<package-id>` занят, BetterYAM сохраняет
+существующую команду. При read-only системной файловой системе пакет всё
+равно устанавливается, но shell-команда не экспортируется; BetterYAM сообщает
+об этом в журнале. Binary-пакеты запускаются с правами пользователя shell,
+поэтому устанавливайте только доверенные пакеты.
 
 Пример фрагмента манифеста:
 

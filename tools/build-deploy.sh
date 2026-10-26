@@ -179,6 +179,15 @@ fi
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/betteryam-build-deploy.XXXXXX")
 trap 'rm -rf -- "$WORK_DIR"' EXIT
 
+run_remote_script() {
+  remote_script="/tmp/betteryam-build-deploy-$$.sh"
+  local_script="$WORK_DIR/remote-script.sh"
+  cat >"$local_script"
+  adb -s "$ADB_SERIAL" push "$local_script" "$remote_script" >/dev/null
+  adb -s "$ADB_SERIAL" shell \
+    "sh '$remote_script'; result=\$?; rm -f '$remote_script'; exit \$result"
+}
+
 echo "Building stripped daemon for $DEVICE_ID..."
 if [[ "$USE_DOCKER" == 1 || "${BUILD_WITH_DOCKER:-0}" == 1 ]]; then
   BUILD_WITH_DOCKER=1 sh "$ROOT/tools/build-daemons.sh" \
@@ -206,21 +215,35 @@ fi
 
 echo "Built daemon:"
 ls -lh "$LOCAL_BINARY"
-echo "Uploading to $ADB_SERIAL..."
-adb -s "$ADB_SERIAL" shell "mkdir -p $DEVICE_ROOT/bin"
+echo "Remounting the station filesystem and preparing daemon upload..."
+run_remote_script <<'REMOTE'
+set -eu
+mount -o remount,rw /
+mount | grep ' on / ' | grep -q '(rw' || {
+    echo "Root filesystem is not writable after remount." >&2
+    exit 1
+}
+mkdir -p /data/quazar/betteryam/bin /data/quazar/betteryam/data
+REMOTE
+echo "Uploading daemon and startup hook to $ADB_SERIAL..."
 adb -s "$ADB_SERIAL" push "$LOCAL_BINARY" "$DEVICE_ROOT/bin/betteryamd.new"
+adb -s "$ADB_SERIAL" push "$ROOT/tools/betteryamd.init" "$DEVICE_ROOT/betteryamd.init.new"
 
 echo "Replacing and restarting BetterYAMd..."
-adb -s "$ADB_SERIAL" shell sh -s <<'REMOTE'
+run_remote_script <<'REMOTE'
 set -eu
 root=/data/quazar/betteryam
 binary=$root/bin/betteryamd
 staged=$root/bin/betteryamd.new
 backup=$root/bin/betteryamd.previous
 pidfile=$root/betteryamd.pid
+init=/etc/init.d/S99zzbetteryam
+staged_init=$root/betteryamd.init.new
 
 stop_daemon() {
-    if [ -f "$pidfile" ]; then
+    if [ -x "$init" ]; then
+        "$init" stop
+    elif [ -f "$pidfile" ]; then
         pid=$(cat "$pidfile")
         case "$pid" in
             ''|*[!0-9]*) echo "Invalid BetterYAMd pid file" >&2; return 1 ;;
@@ -242,9 +265,7 @@ stop_daemon() {
 }
 
 start_daemon() {
-    start-stop-daemon --start --background --make-pidfile \
-        --pidfile "$pidfile" --startas "$binary" -- \
-        --data-dir "$root/data"
+    "$init" start
 }
 
 daemon_running() {
@@ -265,12 +286,18 @@ daemon_running() {
     return 1
 }
 
+if [ -e "$init" ] && ! grep -q '^# Managed by BetterYAM$' "$init"; then
+    echo "Refusing to replace unmanaged init script: $init" >&2
+    exit 1
+fi
 chmod 0755 "$staged"
+chmod 0755 "$staged_init"
 stop_daemon
 if [ -f "$binary" ]; then
     cp "$binary" "$backup"
 fi
 mv "$staged" "$binary"
+mv "$staged_init" "$init"
 
 if start_daemon && daemon_running; then
     echo "BetterYAMd restarted successfully."
@@ -290,4 +317,4 @@ fi
 exit 1
 REMOTE
 
-echo "Deployment complete: $ADB_SERIAL ($DEVICE_ROOT/bin/betteryamd)"
+echo "Deployment complete: $ADB_SERIAL ($DEVICE_ROOT/bin/betteryamd); boot startup installed at /etc/init.d/S99zzbetteryam"
