@@ -6,7 +6,7 @@
       "models": [
         "yandexmini",
         "yandexstationmini",
-        "yandexstationmini_c190"
+        "yndx-0004"
       ],
       "manifest_path": "yandexmini/Cargo.toml",
       "binary": "betteryamd-yandexmini",
