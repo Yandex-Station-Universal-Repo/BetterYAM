@@ -3,19 +3,20 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const APLAY_PATHS: &[&str] = &["/system/workdir/bin/aplay", "/usr/bin/aplay"];
 const ALSA_LIBS: &str = "/bkupgrade/data/bundle/ap2/libs:/system/workdir/lib";
 const MAX_AUDIO_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLAYBACK_SECONDS: u64 = 600;
+const STOP_GRACE: Duration = Duration::from_secs(5);
 
 struct TemporaryAudio(PathBuf);
 
@@ -146,6 +147,28 @@ pub fn validate(bytes: &[u8]) -> Result<()> {
     wav_duration(bytes).map(|_| ())
 }
 
+fn stop(child: &mut Child) -> Result<()> {
+    let pid = libc::pid_t::try_from(child.id()).context("aplay process ID is out of range")?;
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + STOP_GRACE;
+    while Instant::now() < deadline {
+        if child
+            .try_wait()
+            .context("wait for stopped audio playback")?
+            .is_some()
+        {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    tracing::warn!("aplay ignored SIGTERM; killing it");
+    child.kill().context("kill audio playback")?;
+    child.wait().context("wait for killed audio playback")?;
+    Ok(())
+}
+
 fn play_blocking(bytes: Vec<u8>, cancelled: Arc<AtomicBool>) -> Result<()> {
     wav_duration(&bytes)?;
     if cancelled.load(Ordering::Relaxed) {
@@ -172,8 +195,7 @@ fn play_blocking(bytes: Vec<u8>, cancelled: Arc<AtomicBool>) -> Result<()> {
         .with_context(|| format!("start {}", aplay.display()))?;
     loop {
         if cancelled.load(Ordering::Relaxed) {
-            child.kill().context("stop audio playback")?;
-            child.wait().context("wait for stopped audio playback")?;
+            stop(&mut child)?;
             bail!("plugin stopped")
         }
         if let Some(status) = child.try_wait().context("wait for audio playback")? {
