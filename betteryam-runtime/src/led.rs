@@ -143,7 +143,7 @@ impl Led {
         if audio_available {
             features.extend(["audio".into(), "audio.play".into()]);
         }
-        let sensors_available = crate::sensors::available().await;
+        let sensors_available = crate::sensors::available(self.adapter.sensors_ambient_light).await;
         if sensors_available {
             features.extend([
                 "sensors".into(),
@@ -152,6 +152,9 @@ impl Led {
             ]);
             if self.adapter.sensors_proximity {
                 features.push("sensors.proximity".into());
+            }
+            if self.adapter.sensors_ambient_light {
+                features.push("sensors.ambient_light".into());
             }
         }
         let bluetooth_capabilities = crate::bluetooth::availability().await?;
@@ -210,6 +213,10 @@ impl Led {
                 "sensors.proximity".into(),
                 sensors_available && self.adapter.sensors_proximity,
             ),
+            (
+                "sensors.ambient_light".into(),
+                sensors_available && self.adapter.sensors_ambient_light,
+            ),
             ("sensors.control".into(), false),
             ("input".into(), input_available),
             ("input.devices".into(), input_available),
@@ -232,7 +239,8 @@ impl Led {
 
     pub async fn api_json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
         if method == Method::GET && path == "sensors" {
-            let sensors = tokio::task::spawn_blocking(crate::sensors::list)
+            let ambient_light = self.adapter.sensors_ambient_light;
+            let sensors = tokio::task::spawn_blocking(move || crate::sensors::list(ambient_light))
                 .await
                 .context("sensor list task failed")??;
             return Ok(serde_json::to_value(sensors)?);
@@ -243,9 +251,11 @@ impl Led {
                 bail!("invalid sensor ID")
             }
             let id = id.to_owned();
-            let sensor = tokio::task::spawn_blocking(move || crate::sensors::read(&id))
-                .await
-                .context("sensor read task failed")??;
+            let ambient_light = self.adapter.sensors_ambient_light;
+            let sensor =
+                tokio::task::spawn_blocking(move || crate::sensors::read(&id, ambient_light))
+                    .await
+                    .context("sensor read task failed")??;
             return Ok(serde_json::to_value(sensor)?);
         }
         if method == Method::GET && path == "input/devices" {

@@ -27,6 +27,7 @@ impl DeviceAdapter for YandexMicro {
             led_count: LED_COUNT,
             color_order: ColorOrder::Rgb,
             sensors_proximity: false,
+            sensors_ambient_light: false,
         }
     }
 

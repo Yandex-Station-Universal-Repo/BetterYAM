@@ -14,6 +14,7 @@ pub struct AdapterProfile {
     pub led_count: usize,
     pub color_order: ColorOrder,
     pub sensors_proximity: bool,
+    pub sensors_ambient_light: bool,
 }
 
 pub trait LedBackend: Send + Sync {
