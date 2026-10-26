@@ -214,25 +214,43 @@ pub fn add(ssid: &str, key: Option<&str>) -> Result<()> {
     if ssid.is_empty() || ssid.len() > 32 {
         bail!("the network name is 1..32 bytes")
     }
-    for (id, name) in saved()? {
-        if name == ssid {
-            wpa_ok(&["remove_network", &id.to_string()])?;
+    let old_ids: Vec<u32> = saved()?
+        .into_iter()
+        .filter(|(_, name)| name == ssid)
+        .map(|(id, _)| id)
+        .collect();
+
+    let id = wpa_cli(&["add_network"])?.trim().to_string();
+    let numeric_id = id
+        .parse::<u32>()
+        .with_context(|| format!("wpa_cli add_network: {id}"))?;
+
+    let configure = || -> Result<()> {
+        // the name in hex: no quoting, any bytes
+        wpa_ok(&["set_network", &id, "ssid", &hex(ssid.as_bytes())])?;
+        match key {
+            Some(k) => wpa_ok(&["set_network", &id, "psk", k])?,
+            None => wpa_ok(&["set_network", &id, "key_mgmt", "NONE"])?,
+        }
+        // found also when it does not announce its name
+        wpa_ok(&["set_network", &id, "scan_ssid", "1"])?;
+        wpa_ok(&["enable_network", &id])?;
+        wpa_ok(&["save_config"])
+            .context("added for now, but wpa_supplicant could not save it (update_config is off?)")
+    };
+
+    if let Err(error) = configure() {
+        let _ = wpa_ok(&["remove_network", &id]);
+        return Err(error);
+    }
+
+    for old_id in old_ids {
+        if old_id != numeric_id {
+            let _ = wpa_ok(&["remove_network", &old_id.to_string()]);
         }
     }
-    let id = wpa_cli(&["add_network"])?.trim().to_string();
-    id.parse::<u32>()
-        .with_context(|| format!("wpa_cli add_network: {id}"))?;
-    // the name in hex: no quoting, any bytes
-    wpa_ok(&["set_network", &id, "ssid", &hex(ssid.as_bytes())])?;
-    match key {
-        Some(k) => wpa_ok(&["set_network", &id, "psk", k])?,
-        None => wpa_ok(&["set_network", &id, "key_mgmt", "NONE"])?,
-    }
-    // found also when it does not announce its name
-    wpa_ok(&["set_network", &id, "scan_ssid", "1"])?;
-    wpa_ok(&["enable_network", &id])?;
-    wpa_ok(&["save_config"])
-        .context("added for now, but wpa_supplicant could not save it (update_config is off?)")
+    let _ = wpa_ok(&["save_config"]);
+    Ok(())
 }
 
 /// Ask the station's wpa_supplicant to exit (the setup access point needs

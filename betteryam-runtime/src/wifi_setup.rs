@@ -14,10 +14,17 @@
 //!
 //! Off unless `[wifi_setup] mode` says "manual" (started from the API or
 //! the web page) or "auto" (after `ap_after_secs` without a network), and
-//! only where an access point can be run at all: the Mini firmware has no
+//! only where an access point can be run at all: the firmware has no
 //! hostapd and its wpa_supplicant is built without AP mode, so a hostapd
 //! (static, nl80211) must be put in `<data dir>/bin/hostapd` or on PATH.
 //! Until it has been tried on real hardware this is experimental.
+//!
+//! ### Security note
+//! By default (`ap_passphrase` is empty), the setup access point is open to allow
+//! initial headless provisioning. Because captive portal submission sends Wi-Fi
+//! credentials over plain HTTP inside the local subnet (192.168.4.1), an open AP
+//! allows nearby stations to observe credentials in transit. To secure the setup
+//! network, set a non-empty `ap_passphrase` (WPA2-PSK, 8..63 chars) in `[wifi_setup]`.
 
 use crate::captive::{self, Leases, Subnet};
 use crate::wifi::{self, Network};
@@ -71,6 +78,8 @@ pub struct WifiSetupSettings {
     pub mode: Mode,
     /// empty: "BetterYAM-" and the end of the Wi-Fi MAC
     pub ap_ssid: String,
+    /// empty: open setup network; otherwise WPA2-PSK passphrase (8..63 chars)
+    pub ap_passphrase: String,
     pub ap_after_secs: u64,
     pub retry_secs: u64,
     pub try_secs: u64,
@@ -85,6 +94,7 @@ impl Default for WifiSetupSettings {
         Self {
             mode: Mode::Off,
             ap_ssid: String::new(),
+            ap_passphrase: String::new(),
             ap_after_secs: 180,
             retry_secs: 300,
             try_secs: 60,
@@ -101,6 +111,20 @@ impl WifiSetupSettings {
         }
         if !self.ap_ssid.is_empty() && self.ap_ssid.len() > 32 {
             bail!("Wi-Fi setup SSID must be at most 32 bytes")
+        }
+        if !self.ap_passphrase.is_empty() {
+            if self.ap_passphrase.len() < 8 || self.ap_passphrase.len() > 63 {
+                bail!("Wi-Fi setup AP passphrase must be 8..63 characters if set");
+            }
+            if let Some(bad) = self
+                .ap_passphrase
+                .bytes()
+                .find(|&b| !(0x20..=0x7e).contains(&b))
+            {
+                bail!(
+                    "Wi-Fi setup AP passphrase contains invalid byte 0x{bad:02x}; must be printable ASCII (32..126)"
+                );
+            }
         }
         if self.ap_after_secs > 86_400 {
             bail!("Wi-Fi setup ap_after_secs must be at most 86400 seconds")
@@ -470,7 +494,13 @@ impl Setup {
         let run = self.run_dir();
         fs::create_dir_all(&run).context("create the run directory")?;
         let conf = run.join("hostapd.conf");
-        fs::write(&conf, hostapd_conf(&st.ap_ssid, cfg.channel)).context("write hostapd.conf")?;
+        let passphrase = if cfg.ap_passphrase.is_empty() {
+            None
+        } else {
+            Some(cfg.ap_passphrase.as_str())
+        };
+        fs::write(&conf, hostapd_conf(&st.ap_ssid, cfg.channel, passphrase))
+            .context("write hostapd.conf")?;
         let log = fs::File::create(run.join("hostapd.log")).context("create hostapd.log")?;
         let mut child = Command::new(hostapd)
             .arg(&conf)
@@ -660,12 +690,18 @@ impl Setup {
     }
 }
 
-fn hostapd_conf(ssid: &str, channel: u8) -> String {
+fn hostapd_conf(ssid: &str, channel: u8, passphrase: Option<&str>) -> String {
     let hex: String = ssid.bytes().map(|b| format!("{b:02x}")).collect();
-    format!(
+    let mut conf = format!(
         "interface={}\ndriver=nl80211\nssid2={hex}\nutf8_ssid=1\nhw_mode=g\nchannel={channel}\nauth_algs=1\nignore_broadcast_ssid=0\n",
         wifi::IFACE
-    )
+    );
+    if let Some(pass) = passphrase.filter(|p| !p.is_empty()) {
+        conf.push_str(&format!(
+            "wpa=2\nwpa_passphrase={pass}\nwpa_key_mgmt=WPA-PSK\nrsn_pairwise=CCMP\n"
+        ));
+    }
+    conf
 }
 
 fn default_ssid() -> String {
@@ -955,11 +991,16 @@ mod tests {
 
     #[test]
     fn hostapd_conf_names_the_network_in_hex() {
-        let c = hostapd_conf("Дом", 6);
+        let c = hostapd_conf("Дом", 6, None);
         assert!(c.contains("ssid2=d094d0bed0bc\n"));
         assert!(c.contains("interface=wlan0\n"));
         assert!(c.contains("channel=6\n"));
-        assert!(!c.contains("wpa="), "the setup network is open");
+        assert!(!c.contains("wpa="), "the setup network is open by default");
+
+        let secured = hostapd_conf("Дом", 6, Some("supersecret123"));
+        assert!(secured.contains("wpa=2\n"));
+        assert!(secured.contains("wpa_passphrase=supersecret123\n"));
+        assert!(secured.contains("wpa_key_mgmt=WPA-PSK\n"));
     }
 
     #[test]
@@ -983,6 +1024,40 @@ mod tests {
         assert!(settings.validate().is_err());
         settings.ap_ssid.clear();
         settings.retry_secs = 0;
+        assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn settings_validate_ap_passphrase_rejects_newlines_and_control_chars() {
+        let mut settings = WifiSetupSettings::default();
+        assert!(settings.validate().is_ok());
+
+        // Valid passphrase
+        settings.ap_passphrase = "correct horse battery".into();
+        assert!(settings.validate().is_ok());
+
+        // Too short (< 8)
+        settings.ap_passphrase = "short".into();
+        assert!(settings.validate().is_err());
+
+        // Too long (> 63)
+        settings.ap_passphrase = "a".repeat(64);
+        assert!(settings.validate().is_err());
+
+        // Regression: newline injection attempt
+        settings.ap_passphrase = "validpass\nbeacon_int=100".into();
+        assert!(settings.validate().is_err());
+
+        // Regression: CR/LF injection attempt
+        settings.ap_passphrase = "validpass\r\nbeacon_int=100".into();
+        assert!(settings.validate().is_err());
+
+        // Control character (tab, null, etc.)
+        settings.ap_passphrase = "valid\tpassphrase".into();
+        assert!(settings.validate().is_err());
+
+        // Non-ASCII bytes
+        settings.ap_passphrase = "пароль12345".into();
         assert!(settings.validate().is_err());
     }
 }
