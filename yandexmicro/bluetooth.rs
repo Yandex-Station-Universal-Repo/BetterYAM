@@ -68,10 +68,16 @@ fn radio() -> Result<Option<Radio>> {
         });
     }
     radios.sort_by(|left, right| left.state_path.cmp(&right.state_path));
-    if radios.len() > 1 {
-        bail!("multiple Bluetooth rfkill devices found; refusing an ambiguous status")
+    if radios.is_empty() {
+        return Ok(None);
     }
-    Ok(radios.pop())
+    // Yandex Station Lite may have both platform gpio rfkill (bt-dev) and hci rfkill.
+    let any_powered = radios.iter().any(|r| r.powered);
+    let primary = radios.into_iter().next().unwrap();
+    Ok(Some(Radio {
+        state_path: primary.state_path,
+        powered: any_powered,
+    }))
 }
 
 fn process_running(name: &str, required_argument: Option<&str>) -> Result<bool> {
