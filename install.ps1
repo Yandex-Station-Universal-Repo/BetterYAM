@@ -2,6 +2,7 @@
 param(
     [string]$Version = "latest",
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA "YAM"),
+    [string]$Serial = "",
     [switch]$Uninstall
 )
 
@@ -22,6 +23,7 @@ $byamBinary = Join-Path $binDir "byam-bin.exe"
 $byamCommand = Join-Path $binDir "byam.cmd"
 $yamCommand = Join-Path $binDir "yam.cmd"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("yam-" + [guid]::NewGuid())
+$daemonPort = 8099
 
 function Remove-StationDeviceId([string]$Model) {
     return ($Model -creplace '[-_][A-Z0-9]{4}$', '')
@@ -37,45 +39,78 @@ if ($Uninstall) {
     return
 }
 
-function Select-StationSerial {
-    $devices = @(& adb devices | Select-Object -Skip 1 | ForEach-Object {
-            $fields = $_ -split "\s+"
-            if ($fields.Length -ge 2 -and $fields[1] -eq "device") {
-                $serial = $fields[0]
-                $arch = & adb -s $serial shell uname -m 2>$null
-                if ($arch -match "aarch64|arm64|armv7l|armv7") {
-                    $model = Remove-StationDeviceId ((& adb -s $serial shell uname -n 2>$null).Trim())
-                    [PSCustomObject]@{ Serial = $serial; Model = $(if ($model) { $model } else { "unknown" }) }
-                }
-            }
-        })
-    if ($devices.Count -eq 0) { return $null }
-    if ($devices.Count -eq 1) { return $devices[0].Serial }
-    Write-Host "Select station:"
-    for ($i = 0; $i -lt $devices.Count; $i++) {
-        Write-Host ("  {0}) {1} ({2})" -f ($i + 1), $devices[$i].Model, $devices[$i].Serial)
-    }
-    $selection = Read-Host "Number"
-    $number = 0
-    if (-not [int]::TryParse($selection, [ref]$number) -or $number -lt 1 -or $number -gt $devices.Count) {
-        throw "Invalid station selection"
-    }
-    return $devices[$number - 1].Serial
-}
+# ---------- device discovery ----------
 
-function Find-StationIp {
-    $adb = Get-Command adb -ErrorAction SilentlyContinue
-    if ($adb) {
-        $serial = Select-StationSerial
-        if ($serial) {
-            $script:yamStationSerial = $serial
-            $route = & adb -s $serial shell "ip route get 1.1.1.1" 2>$null
-            if ($route -match "\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
-            $address = & adb -s $serial shell "ip -4 addr show wlan0" 2>$null
-            if ($address -match "\binet\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
+function Get-StationDevices {
+    $list = @()
+    foreach ($line in @(& adb devices 2>$null | Select-Object -Skip 1)) {
+        $f = ([string]$line).Trim() -split "\s+"
+        if ($f.Length -lt 2) { continue }
+        if ($f[1] -ne "device") {
+            if ($f[1] -in @("unauthorized", "offline")) {
+                Write-Warning "Skipping $($f[0]): state is '$($f[1])'"
+            }
+            continue
+        }
+        $id = $f[0]
+        $arch = (& adb -s $id shell uname -m 2>$null | Out-String).Trim()
+        if ($arch -notmatch "aarch64|arm") { continue }
+        $name = (& adb -s $id shell uname -n 2>$null | Out-String).Trim()
+        $model = Remove-StationDeviceId $name
+        $list += [PSCustomObject]@{
+            Serial    = $id
+            Model     = $(if ($model) { $model } else { "unknown" })
+            Transport = $(if ($id -match ':\d+$') { "network" } else { "USB" })
         }
     }
-    return Read-Host "Station IP address"
+    return $list
+}
+
+function Select-Station {
+    $devices = @(Get-StationDevices)
+
+    if ($Serial) {
+        $picked = $devices | Where-Object { $_.Serial -eq $Serial } | Select-Object -First 1
+        if (-not $picked) { throw "Device '$Serial' not found among connected stations" }
+        return $picked
+    }
+
+    if ($devices.Count -eq 0) { return $null }
+    if ($devices.Count -eq 1) { return $devices[0] }
+
+    Write-Host "Several devices found. Select station:"
+    for ($i = 0; $i -lt $devices.Count; $i++) {
+        Write-Host ("  {0}) {1}  [{2}]  {3}" -f ($i + 1), $devices[$i].Model, $devices[$i].Transport, $devices[$i].Serial)
+    }
+    while ($true) {
+        $selection = Read-Host "Number"
+        $number = 0
+        if ([int]::TryParse($selection, [ref]$number) -and $number -ge 1 -and $number -le $devices.Count) {
+            return $devices[$number - 1]
+        }
+        Write-Host "Enter a number from 1 to $($devices.Count)"
+    }
+}
+
+function Get-StationIp([string]$Id) {
+    # 1) adb over network: IP is already in the serial
+    if ($Id -match '^(\d{1,3}(?:\.\d{1,3}){3}):\d+$') { return $Matches[1] }
+
+    # 2) ask the device itself
+    $route = (& adb -s $Id shell "ip route get 1.1.1.1" 2>$null | Out-String)
+    if ($route -match "\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
+
+    $wlan = (& adb -s $Id shell "ip -4 addr show wlan0" 2>$null | Out-String)
+    if ($wlan -match "\binet\s+(\d{1,3}(?:\.\d{1,3}){3})") { return $Matches[1] }
+
+    $any = (& adb -s $Id shell "ip -4 addr" 2>$null | Out-String)
+    foreach ($m in [regex]::Matches($any, "\binet\s+(\d{1,3}(?:\.\d{1,3}){3})")) {
+        $candidate = $m.Groups[1].Value
+        if (-not $candidate.StartsWith("127.")) { return $candidate }
+    }
+
+    # 3) no network on the device: caller falls back to USB (adb forward)
+    return $null
 }
 
 function Get-ReleaseAsset([string]$Name) {
@@ -84,7 +119,13 @@ function Get-ReleaseAsset([string]$Name) {
     return $path
 }
 
+# ---------- install ----------
+
 try {
+    if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
+        throw "adb is required to deploy BetterYAMd to the station"
+    }
+
     New-Item -ItemType Directory -Force -Path $tmp, $binDir | Out-Null
     $checksums = Get-ReleaseAsset "SHA256SUMS"
     $manifestFile = Get-ReleaseAsset "manifest.json"
@@ -100,26 +141,38 @@ try {
     }
     Copy-Item -Force $downloads["byam-x86_64-pc-windows-msvc.exe"] $byamBinary
 
-    $stationIp = Find-StationIp
-    if (-not $stationIp) { throw "Station IP address is required" }
-    $adb = Get-Command adb -ErrorAction SilentlyContinue
-    if (-not $adb) { throw "adb is required to deploy BetterYAMd to the station" }
-    $serial = $script:yamStationSerial
-    if (-not $serial) {
-        & adb connect "$stationIp`:5555" | Out-Host
-        $serial = "$stationIp`:5555"
-        & adb -s $serial get-state | Out-Null
+    # pick device
+    $station = Select-Station
+    $stationIp = $null
+    $useForward = $false
+
+    if ($station) {
+        $deviceSerial = $station.Serial
+        Write-Host "Using $($station.Model) [$($station.Transport)] $deviceSerial"
+        $stationIp = Get-StationIp $deviceSerial
+        if (-not $stationIp) { $useForward = $true }
+    } else {
+        Write-Host "No station found via adb (connect it over USB or enter its IP)."
+        $manualIp = (Read-Host "Station IP address").Trim()
+        if ($manualIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+            throw "No station found: connect it over USB or provide a valid IP address"
+        }
+        & adb connect "$manualIp`:5555" | Out-Host
+        $deviceSerial = "$manualIp`:5555"
+        & adb -s $deviceSerial get-state | Out-Null
+        $stationIp = $manualIp
     }
-    $stationHostname = (& adb -s $serial shell uname -n 2>$null).Trim()
+
+    $stationHostname = (& adb -s $deviceSerial shell uname -n 2>$null | Out-String).Trim()
     if (-not $stationHostname) { throw "Could not determine station model using uname -n" }
     $stationModel = Remove-StationDeviceId $stationHostname
     $modelId = ($stationModel.ToLowerInvariant() -replace '[^a-z0-9_-]', '-' -replace '-+', '-').Trim('-')
     if (-not $modelId) { throw "Station model did not produce a valid daemon ID" }
-    $matches = @($releaseManifest.devices | Where-Object {
+    $manifestMatches = @($releaseManifest.devices | Where-Object {
             $_.models -contains $modelId -or ($_.models.Count -eq 0 -and $_.device -eq $modelId)
         })
-    if ($matches.Count -ne 1) { throw "No unique BetterYAMd manifest entry for model '$stationModel' ($modelId)" }
-    $deviceEntry = $matches[0]
+    if ($manifestMatches.Count -ne 1) { throw "No unique BetterYAMd manifest entry for model '$stationModel' ($modelId)" }
+    $deviceEntry = $manifestMatches[0]
     $daemonAsset = $deviceEntry.asset
     $daemonSha256 = $deviceEntry.sha256sum
     if (-not $daemonAsset -or -not $daemonSha256 -or -not $deviceEntry.filepath) {
@@ -137,27 +190,39 @@ try {
     $actual = (Get-FileHash -Algorithm SHA256 $daemonBinary).Hash.ToLowerInvariant()
     if ($actual -ne $daemonSha256.ToLowerInvariant()) { throw "Checksum mismatch for $daemonAsset" }
     $devicePrefix = "/data/quazar/betteryam"
-    & adb -s $serial shell "mkdir -p $devicePrefix/bin $devicePrefix/data" | Out-Null
-    & adb -s $serial push $daemonBinary "$devicePrefix/bin/betteryamd.new" | Out-Null
+    & adb -s $deviceSerial shell "mkdir -p $devicePrefix/bin $devicePrefix/data" | Out-Null
+    & adb -s $deviceSerial push $daemonBinary "$devicePrefix/bin/betteryamd.new" | Out-Null
     $startCommand = 'chmod 0755 /data/quazar/betteryam/bin/betteryamd.new; if [ -f /data/quazar/betteryam/betteryamd.pid ] && kill -0 $(cat /data/quazar/betteryam/betteryamd.pid) 2>/dev/null; then kill $(cat /data/quazar/betteryam/betteryamd.pid); fi; mv /data/quazar/betteryam/bin/betteryamd.new /data/quazar/betteryam/bin/betteryamd; start-stop-daemon --start --background --make-pidfile --pidfile /data/quazar/betteryam/betteryamd.pid --startas /data/quazar/betteryam/bin/betteryamd -- --data-dir /data/quazar/betteryam/data'
-    & adb -s $serial shell $startCommand | Out-Null
+    & adb -s $deviceSerial shell $startCommand | Out-Null
 
-    $yamUrl = "http://$stationIp`:8099"
+    # address the CLI will use
+    if ($useForward) {
+        & adb -s $deviceSerial forward "tcp:$daemonPort" "tcp:$daemonPort" | Out-Null
+        $yamUrl = "http://127.0.0.1:$daemonPort"
+        $forwardLine = "adb -s `"$deviceSerial`" forward tcp:$daemonPort tcp:$daemonPort >nul 2>&1`r`n"
+    } else {
+        $yamUrl = "http://$stationIp`:$daemonPort"
+        $forwardLine = ""
+    }
+
     [Environment]::SetEnvironmentVariable("YAM_URL", $yamUrl, "User")
     $env:YAM_URL = $yamUrl
-    @"
-@echo off
-if not defined YAM_URL set "YAM_URL=$yamUrl"
-"%~dp0byam-bin.exe" %*
-"@ | Set-Content -Encoding ascii $yamCommand
+
+    $wrapper = "@echo off`r`n" +
+        $forwardLine +
+        "if not defined YAM_URL set `"YAM_URL=$yamUrl`"`r`n" +
+        "`"%~dp0byam-bin.exe`" %*`r`n"
+    Set-Content -Encoding ascii -Path $yamCommand -Value $wrapper
     Copy-Item -Force $yamCommand $byamCommand
 
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if (-not (($userPath -split ";") -contains $binDir)) {
         [Environment]::SetEnvironmentVariable("Path", (($userPath, $binDir | Where-Object { $_ }) -join ";"), "User")
     }
     $env:Path = "$binDir;$env:Path"
-    Write-Host "BetterYAM $tag installed in $Prefix and BetterYAMd ($($deviceEntry.filepath)) for $stationModel deployed to $stationIp"
+
+    $where = if ($useForward) { "$deviceSerial (USB, adb forward)" } else { $stationIp }
+    Write-Host "BetterYAM $tag installed in $Prefix and BetterYAMd ($($deviceEntry.filepath)) for $stationModel deployed to $where"
     Write-Host "Use byam list or byam --url $yamUrl list (yam.cmd is also available)"
 } finally {
     if (Test-Path $tmp) { Remove-Item -Force -Recurse $tmp }
