@@ -6,9 +6,6 @@
 - **Permission:** `input`
 - **Аргументы:** нет.
 - **Результат:** массив строк с точными kernel device names.
-- **Доступность:** проверяйте capability этой операции в
-  `device.capabilities`; отсутствие capability означает, что операция
-  недоступна.
 
 ```lua
 for _, name in ipairs(alice.input.devices()) do

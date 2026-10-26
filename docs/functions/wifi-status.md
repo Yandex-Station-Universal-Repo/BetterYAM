@@ -6,9 +6,6 @@
 - **Permission:** `wifi`
 - **Аргументы:** нет.
 - **Результат:** таблица статуса.
-- **Доступность:** проверяйте capability этой операции в
-  `device.capabilities`; отсутствие capability означает, что операция
-  недоступна.
 
 ```lua
 local status = alice.wifi.status()

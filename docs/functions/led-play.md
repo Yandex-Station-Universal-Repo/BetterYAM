@@ -7,9 +7,6 @@
 - **Результат:** завершается после pattern; ошибка чтения, формата или backend
   передаётся Lua.
 - **Отмена:** остановка пакета отменяет playback.
-- **Доступность:** проверяйте capability этой операции в
-  `device.capabilities`; отсутствие capability означает, что операция
-  недоступна.
 
 ```lua
 alice.play("patterns/pulse.json")

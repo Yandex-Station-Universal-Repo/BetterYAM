@@ -1,196 +1,208 @@
-# Установка
+# Установка, API и развёртывание
 
-Нужен `adb`. `uname -a` показывает сведения о ядре; nodename в его выводе —
-второе поле после `Linux`, его отдельно возвращает `uname -n`. Установщик
-получает hostname через `uname -n`, удаляет конечный
-отдельный сегмент из четырёх заглавных ASCII-букв/цифр (ID экземпляра
-устройства), затем ищет точную модель в release `manifest.json`. Например,
-`Yandex-Station-Midi-44QK`, `Yandex-Mini3-J3MK` и
-`YandexStationMini_729E` превращаются соответственно в
-`Yandex-Station-Midi`, `Yandex-Mini3` и `YandexStationMini`. Модельный суффикс
-`gen2` не удаляется. Установщик проверяет SHA-256 и устанавливает выбранный
-BetterYAMd в `/data/quazar/betteryam`.
+## Установка daemon-а
+
+Установщику нужны `adb` и доступная по ADB колонка. При нескольких
+поддерживаемых устройствах можно выбрать колонку из списка. Установщик
+получает модель через `uname -n`, удаляет конечный сегмент `-XXXX` или
+`_XXXX` (четыре заглавные буквы или цифры) и ищет точное совпадение в release
+`manifest.json`. Например:
+
+| Hostname | Модель для поиска |
+| --- | --- |
+| `Yandex-Station-Midi-44QK` | `Yandex-Station-Midi` |
+| `Yandex-Mini3-J3MK` | `Yandex-Mini3` |
+| `YandexStationMini_729E` | `YandexStationMini` |
+
+Суффикс модели, например `gen2`, не удаляется. Неизвестная модель не
+сопоставляется с похожим устройством. Установщик проверяет SHA-256 daemon-а и
+размещает его в `/data/quazar/betteryam`.
+
+### macOS и Linux
+
+Установка последнего релиза:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh
 ```
 
-Windows:
+Для конкретной версии передайте номер релиза первым аргументом:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh -s -- 0.1.18
+```
+
+Unix-установщик поддерживает Linux x86_64 и macOS Apple Silicon. CLI
+устанавливается в `~/.local/bin/byam`; `yam` создаётся как совместимый alias.
+Если каталог не входит в `PATH`, добавьте его или запускайте CLI по полному
+пути.
+
+### Windows
+
+Запустите PowerShell от имени пользователя, у которого установлен `adb`:
 
 ```powershell
-irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.ps1 | iex
+irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.ps1 | iex
 ```
 
-Unix-установщик поддерживает Linux x86_64 и macOS Apple Silicon. Он загружает
-последний релиз по умолчанию; для конкретной версии передайте её первым
-аргументом, например `sh -s -- 0.1.18`. CLI устанавливается в
-`~/.local/bin/byam`; `yam` создаётся как совместимый alias. Если каталог не
-включён в `PATH`, запускайте CLI по полному пути или добавьте `~/.local/bin` в
-`PATH`.
+### Запуск при старте и удаление
 
-Основная команда CLI — `byam`; Windows-установщик добавляет `byam.cmd` и
-совместимый `yam.cmd` в пользовательский `PATH`. Для удаления Unix-установки
-из клона репозитория выполните `sh install.sh --uninstall`; при запуске из
-сети передайте `--uninstall` через stdin:
+Установщик создаёт `/etc/init.d/S99zzbetteryam`. BusyBox `rcS` запускает hook
+после других `S99`-скриптов; hook перемонтирует `/` в `rw` и запускает
+`betteryamd` в фоне с pid-файлом. Повторная установка обновляет управляемый
+hook, но не перезаписывает чужой файл с тем же именем.
+
+Чтобы удалить установку из клона репозитория:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/betteryam/install.sh | sh -s -- --uninstall
+sh install.sh --uninstall
 ```
 
-Удаление также удаляет daemon с выбранной колонки. Установщикам нужны Android
-Platform Tools (`adb`) и доступная по ADB колонка. Если подключено несколько
-поддерживаемых устройств, можно выбрать нужное в интерактивном списке.
-Скрипты установки и деплоя перемонтируют корневую файловую систему в `rw`
-перед записью файлов. На станции устанавливается
-`/etc/init.d/S99zzbetteryam`; BusyBox `rcS` запускает этот hook после других
-`S99`-скриптов. Hook сам выполняет `mount -o remount,rw /` и запускает
-`betteryamd` в фоне с pid-файлом. Повторные установки обновляют управляемый
-hook, но отказываются перезаписывать чужой файл с тем же именем.
-`install.sh --uninstall` останавливает BetterYAMd и удаляет hook, только если
-он содержит маркер BetterYAM.
+При запуске установщика из сети передайте флаг через stdin:
 
-CLI обращается к `http://<колонка>:8099`; адрес можно переопределить `YAM_URL`.
-По умолчанию daemon выбирает активный LAN IPv4-адрес и слушает порт `8099`.
-Задайте `--listen IP:PORT`, чтобы выбрать конкретный интерфейс или порт.
-Каталог сборки — root `manifest.json`. `sh tools/build-daemons.sh` собирает все
-перечисленные устройства; необязательный третий аргумент ограничивает сборку
-одним ID устройства, например
-`sh tools/build-daemons.sh manifest.json dist yandexmini`. Релизные daemon
-бинарники автоматически собираются с удалёнными symbol/debug данными. Скрипт
-создаёт `dist/manifest.json`, assets в `dist/assets/` и `dist/SHA256SUMS`.
-`tools/publish-all.sh` собирает daemon-ы локальным Rust toolchain на текущем
-компьютере, без Docker. Для cross-build должны быть установлены Rust target и
-подходящий linker для каждой архитектуры из manifest. Скрипту публикации также
-нужны `gh` с авторизованной GitHub-сессией и доступ к сети. Неизвестная модель
-не сопоставляется с похожим устройством: установка завершается с ошибкой.
-
-## YAM API и capability profile
-
-CLI и общая Web Panel подключаются к HTTP API BetterYAMd. HTTP API и plugin
-runtime реализованы один раз в `betteryam-runtime/`; daemon каждого устройства
-передаёт runtime adapter и hardware backend. Frontend панели общий, а доступные
-разделы и действия определяются capabilities профиля, не моделью. Контракт
-интеграции панели описан в [WEB_PANEL_INTEGRATION.md](./WEB_PANEL_INTEGRATION.md).
-
-`GET /api/device` возвращает `id`, `model`, `architecture`, `led_count`, `features`
-и словарь `capabilities` с boolean значениями. `features` сохраняется для
-совместимости с manifest compatibility; `capabilities` отвечает за доступность
-каждой отдельной операции/возможности. Отсутствующий capability считается
-недоступным (`false`). Например:
-
-```json
-{
-  "features": ["led.ring.rgb", "led.ring.12", "clock"],
-  "capabilities": {
-    "led.ring.rgb": true,
-    "led.ring.12": true,
-    "clock": true,
-    "clock.segments": false
-  }
-}
+```sh
+curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh -s -- --uninstall
 ```
 
-Полный контракт API сохраняется:
+Удаление останавливает daemon и удаляет hook, если тот содержит маркер
+BetterYAM.
 
-| Маршрут | Контракт |
+## CLI и сборка daemon-ов
+
+CLI обращается к `http://<колонка>:8099`; адрес можно переопределить через
+`--url` или `YAM_URL`. По умолчанию daemon выбирает активный LAN IPv4-адрес и
+слушает порт `8099`. Параметр `--listen IP:PORT` задаёт адрес и порт вручную.
+
+Корневой `manifest.json` задаёт daemon-ы, модели и build targets. Собрать их
+все и создать релизный manifest можно командой:
+
+```sh
+sh tools/build-daemons.sh
+```
+
+Необязательный третий аргумент ограничивает сборку одним ID устройства:
+
+```sh
+sh tools/build-daemons.sh manifest.json dist yandexmini
+```
+
+Скрипт создаёт `dist/manifest.json`, бинарные assets в `dist/assets/` и
+`dist/SHA256SUMS`. Релизные daemon-бинарники собираются с удалёнными
+символами отладки. Для cross-build нужны Rust target и подходящий linker для
+каждой архитектуры из manifest. Скрипт `tools/publish-all.sh` дополнительно
+требует `gh`, авторизованную GitHub-сессию и сетевой доступ.
+
+## Device API и capabilities
+
+Общий HTTP API и plugin runtime реализованы в `betteryam-runtime/`. Каждый
+daemon передаёт runtime adapter и hardware backend. Профиль возвращается
+маршрутом `GET /api/device` и содержит `id`, `model`, `architecture`,
+`led_count`, `features` и словарь boolean `capabilities`.
+
+`features` сохраняет совместимость с `[compatibility].features` в манифестах
+пакетов. `capabilities` показывает доступность конкретных операций;
+отсутствующая capability означает `false`. Например, наличие
+`bluetooth.status` не гарантирует поддержку `bluetooth.power`.
+
+Для LED используйте `device.led_count`. Порядок цветовых каналов и аппаратный
+способ вывода задаёт adapter. Возможности остальных API зависят от устройства,
+системных интерфейсов и runtime-состояния. Наличие маршрута само по себе не
+означает, что операция доступна. Подробнее:
+[каталог Lua-функций](./functions/README.md) и
+[матрица поддержки устройств](./DEVICE_SUPPORT.md).
+
+### Основные HTTP-маршруты
+
+Все перечисленные маршруты начинаются с `/api`.
+
+| Область | Маршруты | Назначение |
+| --- | --- | --- |
+| Профиль | `GET /device` | Device profile, features и capabilities |
+| Пакеты | `/plugins`, `/plugins/{id}/...` | Установка, запуск, остановка и журналы |
+| LED и логотип | `POST /led`, `/led/off`, `/logo`, `/logo/off` | Вывод кадра или выключение |
+| Датчики | `GET /sensors`, `/sensors/{id}` | Список и чтение датчика |
+| Часы | `GET/PUT /clock` | Чтение и управление часами |
+| Громкость | `GET/PUT /volume` | Чтение и установка `{percent}` |
+| Bluetooth | `GET /bluetooth/status`, `PUT /bluetooth/power` | Статус и питание |
+| Wi-Fi | `/wifi`, `/wifi/scan`, `/wifi/networks...`, `/wifi/setup` | Состояние и настройка Wi-Fi |
+| Настройки | `GET/PUT /settings` | Чтение и сохранение настроек daemon-а |
+
+### Binary runtime API
+
+Binary-плагин получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`. Передавайте
+токен в заголовке `X-YAM-Token`. Маршруты находятся под
+`/api/runtime/{id}/...`; права доступа зависят от permissions плагина.
+
+| Операция | Runtime-маршруты |
 | --- | --- |
-| `GET /api/device` | Профиль, feature list и boolean capabilities |
-| `POST /api/led`, `POST /api/led/off` | `{colors: ["#RRGGBB", ...]}` / выключить LED |
-| `GET /api/sensors`, `GET /api/sensors/{id}` | Список `{id, kind, unit, value}` и чтение сенсора |
-| `GET /api/clock`, `PUT /api/clock` | Состояние часов; запрос принимает `time`, `brightness`, `segments` или `off` |
-| `GET /api/volume`, `PUT /api/volume` | Получение уровня; установка `{percent}` |
-| `POST /api/runtime/{id}/led`, `POST /api/runtime/{id}/led/off` | LED frame / выключить LED; runtime token и permission `led` |
-| `POST /api/runtime/{id}/logo`, `POST /api/runtime/{id}/logo/off` | Logo frame / выключить; runtime token и permission `led` |
-| `POST /api/runtime/{id}/audio/play` | PCM WAV bytes, максимум 64 MiB и 600 секунд; runtime token и permission `audio` |
-| `POST /api/runtime/{id}/clock` | Управление часами; runtime token и permission `clock` |
-| `GET/PUT /api/runtime/{id}/volume` | Получение/установка `{percent}`; runtime token и permission `volume` |
-| `GET /api/bluetooth/status` | JSON-статус |
-| `PUT /api/bluetooth/power` | `{on: boolean}`; доступно только когда Quasar остановлен |
-| `GET /api/runtime/:id/input/devices` | Разрешённые package input device names; runtime token и permission `input` обязательны |
-| `POST /api/runtime/:id/input/next-event` | `{devices, timeout_ms}`; только объявленные package устройства |
-| `/api/runtime/{id}/bluetooth/status`, `/api/runtime/{id}/bluetooth/power` | Bluetooth status/power; runtime token и permission `bluetooth` |
-| `/api/runtime/{id}/wifi` и его subroutes `/scan`, `/networks`, `/networks/{ssid}`, `/setup` | Wi-Fi API; runtime token и permission `wifi` |
+| Устройство и датчики | `GET /device`, `/sensors`, `/sensors/{id}` |
+| LED и логотип | `POST /led`, `/led/off`, `/logo`, `/logo/off` |
+| Часы и громкость | `POST /clock`, `GET/PUT /volume` |
+| Аудио | `POST /audio/play` |
+| Bluetooth | `GET /bluetooth/status`, `PUT /bluetooth/power` |
+| Input | `GET /input/devices`, `POST /input/next-event` |
+| Wi-Fi | `/wifi` и подмаршруты `/scan`, `/networks`, `/setup` |
 
-Общий runtime сохраняет прежний Lua API и permissions. LED frame должен
-содержать ровно `device.led_count` цветов; порядок RGB/BGR и способ записи
-определяет hardware adapter. Профили Mini и Lite имеют разные LED counts и
-backend-ы. Остальные аппаратные возможности сообщаются динамически и зависят
-от устройства, обнаруженных системных интерфейсов и безопасных условий
-выполнения. Наличие маршрута или Lua-метода не означает, что операция
-поддерживается на конкретном устройстве. Проверяйте точные capabilities
-профиля; сигнатуры и ограничения Lua API собраны в
-[каталоге функций](./functions/README.md), сведения об адаптерах — в
-[матрице поддержки устройств](./DEVICE_SUPPORT.md).
+Runtime-маршруты для аудио принимают PCM WAV до 64 MiB и 600 секунд.
+Input-доступ ограничен устройствами, объявленными в манифесте. Lua API и
+permissions подробно описаны в [документации плагинов](./PLUGIN_API.md).
 
-## Wi-Fi и своя сеть для настройки с телефона
+## Wi-Fi и точка доступа
 
-Раздел «Wi-Fi» в Web UI и API используют Wi-Fi adapter. На устройствах с
-поддерживаемым `wpa_cli` он работает с тем же wpa_supplicant, которым управляет
-прошивка колонки. Сеть добавляется ключом,
-выведенным из пароля (PBKDF2, как `wpa_passphrase`): пароль не хранится и не
-попадает в командную строку. Сохраняется `save_config` в конфигурацию самого
-wpa_supplicant, поэтому прошивка видит её как свою. Capabilities `wifi`,
-`wifi.status`, `wifi.scan`, `wifi.networks` включены, когда есть `wpa_cli`
-и интерфейс `wlan0`.
+Wi-Fi реализуется adapter-ом устройства. На поддерживаемых системах backend
+использует `wpa_cli` и wpa_supplicant. Пароль сети преобразуется в ключ
+(PBKDF2) и не помещается в командную строку. Сохраняется конфигурация
+wpa_supplicant, поэтому её видит системная прошивка.
 
-| Маршрут | Контракт |
+Основные маршруты:
+
+| Метод и маршрут | Назначение |
 | --- | --- |
-| `GET /api/wifi` | `{available, current, saved, around, setup}`: текущая сеть, сохранённые, сети вокруг, состояние своей сети |
-| `GET /api/wifi/networks` | `{saved, around}` без паролей |
-| `POST /api/wifi/scan` | `{started}`; начать поиск сетей (`false` в режиме собственной точки доступа) |
-| `POST /api/wifi/networks` | `{ssid, password}`; пустой пароль — открытая сеть. Ответ `{leaving}`: `true`, если колонка уходит со своей сети на эту |
-| `DELETE /api/wifi/networks/{ssid}` | Забыть сеть |
-| `GET /api/wifi/setup` | Состояние точки доступа, её доступность и последняя ошибка |
-| `POST /api/wifi/setup` | `{on}`: поднять или убрать свою сеть вручную |
-| `GET/PUT /api/settings` | Прочитать/сохранить `wifi_setup` (режим, имя, канал и интервалы); значения валидируются перед сохранением |
+| `GET /api/wifi` | Текущая сеть, сохранённые сети и состояние setup |
+| `GET /api/wifi/networks` | Сохранённые и обнаруженные сети без паролей |
+| `POST /api/wifi/scan` | Запуск поиска сетей |
+| `POST /api/wifi/networks` | Добавление сети: `{ssid, password}` |
+| `DELETE /api/wifi/networks/{ssid}` | Удаление сохранённой сети |
+| `GET/POST /api/wifi/setup` | Статус и управление точкой доступа |
+| `GET/PUT /api/settings` | Сохранение параметров `wifi_setup` |
 
-Те же операции доступны package runtime по `/api/runtime/{id}/wifi...` с
-обязательными runtime token и permission `wifi`, а из Lua — если manifest
-явно запросил это permission. Lua методы: `alice.wifi.status()`, `scan()`,
-`add(ssid, password)`, `forget(ssid)` и `setup(on)`. `status()` включает
-`current`, `saved`, `around` и `setup`; `scan()` возвращает `true`, если поиск
-запущен, и `false`, когда устройство уже находится в режиме собственной точки
-доступа. Ошибки backend возвращаются вызывающему коду, а не заменяются пустым
-результатом.
+Эти операции доступны Lua-плагину с permission `wifi`; методы и результаты
+описаны в [каталоге функций](./functions/README.md). Runtime-маршруты требуют
+токен и тот же permission.
 
-**Своя сеть (экспериментально, на железе ещё не проверялась).** Без сети
-колонка поднимает открытую сеть `BetterYAM-XXXX` (`192.168.4.1`). Телефон,
-подключившийся к ней, получает адрес и DNS, который отвечает на любое имя
-адресом колонки. Поэтому телефон сам предлагает «войти в сеть» и открывает
-страницу выбора Wi-Fi (также `http://192.168.4.1`). DHCP и DNS встроены в
-BetterYAMd, dnsmasq и udhcpd не нужны. Выбранная сеть добавляется, как только
-вернётся wpa_supplicant колонки, и колонка сразу её пробует. Если за
-`try_secs` она не получила адрес, своя сеть поднимается снова, а страница
-сообщает, что подключиться не вышло.
+### Экспериментальная собственная сеть
 
-Обратный путь — всегда прежняя сеть. Раз в `retry_secs` (кроме времени, когда
-к своей сети подключён телефон, но не дольше трёх таких кругов) колонка на
-`try_secs` уходит искать знакомые сети, поэтому после отключения света она
-сама вернётся, когда поднимется роутер. wpa_supplicant прошивки
-останавливается через `wpa_cli terminate` и запускается обратно ровно той
-командой, какой был запущен (она запоминается из `/proc`). Если кто-то
-запустит wpa_supplicant, пока поднята своя сеть, она сразу снимается: с
-Wi-Fi прошивки BetterYAMd не спорит.
+Режим точки доступа экспериментальный и пока не проверен на устройстве.
+При его включении daemon создаёт открытую сеть `BetterYAM-XXXX` по адресу
+`192.168.4.1`. Встроенные DHCP и DNS перенаправляют телефон на страницу
+настройки; отдельные `dnsmasq` и `udhcpd` не требуются.
 
-Точку доступа поднимает `hostapd`, если это поддерживают драйвер и прошивка
-устройства. Укажите путь к совместимому `hostapd` в `<data dir>/bin/hostapd`
-или `PATH`. Без рабочего backend capability `wifi.ap` равна `false`. По
-умолчанию своя сеть выключена (`settings.toml`):
+После выбора сети daemon пробует подключиться к ней. Если за `try_secs` адрес
+не получен, точка доступа запускается снова. Периодически daemon проверяет
+сохранённые сети в течение `try_secs`. Пока к точке доступа подключён телефон,
+такие попытки откладываются, но не более чем на три цикла.
+
+wpa_supplicant прошивки останавливается через `wpa_cli terminate` и
+запускается повторно с исходными аргументами. Если wpa_supplicant запускается
+отдельно, BetterYAM снимает свою точку доступа и не конфликтует с ним.
+
+Для точки доступа требуются поддержка режима AP со стороны драйвера и
+совместимый `hostapd` в `<data dir>/bin/hostapd` или `PATH`. Без backend
+capability `wifi.ap` равна `false`. Режим по умолчанию выключен:
 
 ```toml
 [wifi_setup]
-mode = "auto"        # off (по умолчанию) | manual — только кнопкой | auto — сама без сети
-ap_after_secs = 180  # сколько ждать без сети в режиме auto
-retry_secs = 300     # как часто со своей сети искать знакомые
-try_secs = 60        # сколько их искать
-channel = 6          # канал 2,4 ГГц своей сети
+mode = "off"         # off | manual | auto
+ap_after_secs = 180  # ожидание сети перед запуском AP в режиме auto
+retry_secs = 300     # интервал повторного поиска сохранённых сетей
+try_secs = 60        # длительность одной попытки
+channel = 6          # канал 2,4 ГГц
 ap_ssid = ""         # пусто — BetterYAM-<конец MAC>
-hostapd = ""         # путь к hostapd; пусто — <data dir>/bin/hostapd, затем PATH
+hostapd = ""         # путь; по умолчанию data dir, затем PATH
 ```
 
-Прежде чем включать: снимите с колонки `tools/wifi-probe.sh`. Он только
-читает: умеет ли драйвер Wi-Fi режим точки доступа, кто управляет
-wpa_supplicant, свободны ли порты 53, 67 и 80.
+Перед включением точки доступа проверьте драйвер и свободные порты командой
+`tools/wifi-probe.sh`. Скрипт только читает состояние:
 
 ```sh
 adb shell sh < tools/wifi-probe.sh > wifi-probe.txt
@@ -198,5 +210,6 @@ adb shell sh < tools/wifi-probe.sh > wifi-probe.txt
 
 ## Безопасность и обновления
 
-Web UI не имеет аутентификации: используйте только доверенную LAN. Обновление BetterYAMd выполняется установщиком: он выбирает asset по текущей
-модели станции.
+Web UI не имеет аутентификации; используйте его только в доверенной LAN.
+Обновляйте daemon через установщик: он выбирает asset по модели Станции и
+проверяет контрольную сумму.

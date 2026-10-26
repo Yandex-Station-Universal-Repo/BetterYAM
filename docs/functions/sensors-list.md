@@ -5,9 +5,6 @@
 - **Permission:** `sensors`
 - **Аргументы:** нет.
 - **Результат:** массив таблиц `{id, kind, unit, value}`.
-- **Доступность:** проверяйте capability этой операции в
-  `device.capabilities`; отсутствие capability означает, что операция
-  недоступна.
 
 ```lua
 for _, sensor in ipairs(alice.sensors.list()) do

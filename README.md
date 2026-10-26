@@ -2,107 +2,47 @@
 
 **BetterYAM — альтернативный runtime для YAM-плагинов на Яндекс Станциях.**
 Он запускает Lua- и binary-пакеты, предоставляет CLI `byam` и HTTP API для
-управления устройством. Общий HTTP API и plugin runtime находятся в `betteryam-runtime`; аппаратные
-функции подключаются через адаптер устройства и объявляются в его профиле.
+управления устройством.
 
-Проект сохраняет совместимость с привычной моделью пакетов и Lua API YAM, но
-развивается отдельно: устройства могут иметь собственные аппаратные адаптеры,
-а доступность функций определяется capabilities, а не предположениями о модели.
+Общий HTTP API и plugin runtime находятся в `betteryam-runtime/`. Каждый
+поддерживаемый тип устройства подключает собственный adapter, который
+предоставляет аппаратные backend-ы и профиль возможностей. Доступность API
+определяется профилем, а не предположением о модели.
 
-> **Текущий статус:** в репозитории собраны daemons для Yandex Station Mini и Yandex Station Lite (`yandexmicro`).
-> Установщик выбирает устройство по модели и не подменяет неизвестную модель
-> похожей. Поддержка других устройств требует отдельной реализации и проверки;
-> наличие универсальной архитектуры не означает, что любой тип Станции уже
-> поддерживается.
-
-## Содержание
-
-- [Возможности](#возможности)
-- [Зачем BetterYAM](#зачем-betteryam)
-- [Установка](#установка)
-- [Первые команды](#первые-команды)
-- [Веб-панель и API](#веб-панель-и-api)
-- [Пакеты и совместимость](#пакеты-и-совместимость)
-- [Поддержка устройств](#поддержка-устройств)
-- [Сборка и тестирование](#сборка-и-тестирование)
-- [Документация](#документация)
-- [Участие в разработке](#участие-в-разработке)
-- [Лицензия](#лицензия)
+> Сейчас в репозитории есть daemon-ы для Yandex Station Mini и Lite
+> (`yandexmicro`). Неизвестная модель не подменяется похожей: для новой модели
+> нужны отдельные реализация и проверка.
 
 ## Возможности
 
-- **Runtime для YAM-пакетов:** запуск Lua-плагинов и поддержка binary-пакетов.
-- **CLI `byam`:** установка из файла или registry, управление пакетами,
-  сервисами, логами и доступными функциями устройства.
-- **HTTP API:** локальное управление daemon-ом и точки подключения для CLI,
-  Web Panel и binary-плагинов.
-- **Device profiles и capabilities:** устройство сообщает, какие операции
-  действительно доступны; плагины могут проверять их до вызова.
-- **Общий runtime устройств:** HTTP API и plugin runtime общие; каждый daemon
-  передаёт runtime адаптер оборудования и его профиль.
-- **Разрешения плагинов:** hardware и runtime API доступны в рамках permissions,
-  объявленных в пакете.
-- **Установка через ADB:** установщик на компьютере подбирает daemon по модели
-  подключённой Станции и проверяет контрольные суммы релизных файлов.
-
-Поддерживаемые аппаратные возможности различаются по адаптерам. Mini имеет
-6 RGB LED, Lite (`yandexmicro`) — 3 RGB LED; поддержка proximity sensor также
-зависит от профиля. Доступность остальных функций зависит от обнаруженного
-оборудования и runtime-среды. Проверяйте `capabilities` в `GET /api/device`;
-контракт Lua описан в [каталоге функций](./docs/functions/README.md), а текущие
-ограничения адаптеров — в [матрице поддержки](./docs/DEVICE_SUPPORT.md).
-
-## Зачем BetterYAM
-
-BetterYAM предназначен для тех, кому нужен управляемый и расширяемый runtime,
-а не прошивка конкретного устройства:
-
-1. **Существующие пакеты.** Сохраняются привычные `.yap`/`.pkg`, Lua-контракт
-   `alice`, `device`, `event` и основные вызовы `alice.set`, `alice.off`,
-   `alice.play`, `alice.logo.set` и `alice.logo.off`.
-2. **Явная поддержка hardware.** Capability включается только при обнаруженном
-   и пригодном адаптере. Неподдерживаемая операция не маскируется под успешную.
-3. **Безопасное расширение.** Для новой модели можно добавить свой daemon и
-   зарегистрировать точные model aliases, не маршрутизируя её в несовместимый
-   backend.
-4. **Управление с компьютера.** `byam` предоставляет удобные команды, а HTTP
-   API остаётся доступен для автоматизации и интеграций.
-5. **Permissions пакетов.** Плагин должен явно запросить доступ к аппаратным
-   возможностям и системным API.
-
-BetterYAM — самостоятельный форк/runtime, а не официальный продукт Яндекса.
-Поддержка функций зависит от модели, прошивки и доступности системных
-интерфейсов.
+- Запуск Lua- и binary-пакетов `.yap`/`.pkg` с сохранением совместимости YAM.
+- CLI `byam` для установки и управления пакетами, службами и журналами.
+- HTTP API для CLI, Web Panel и binary-плагинов.
+- Device profiles и capabilities для проверки доступности аппаратных функций.
+- Package permissions для контроля доступа к аппаратным и системным API.
+- Установка daemon-а на подключённую по ADB колонку с проверкой SHA-256.
 
 ## Установка
 
-### Требования
-
-- macOS Apple Silicon или Linux x86_64 для Unix-установщика; для Windows
-  используется PowerShell-установщик.
-- Android Platform Tools (`adb`) на компьютере.
-- Станция, доступная по ADB. Подключите её по USB или настройте ADB по сети.
-- Компьютер и Станция должны иметь сетевое соединение для обращения CLI к
-  daemon API.
+Требуются `adb` и поддерживаемая Станция, доступная по ADB и сети.
 
 ### macOS и Linux
 
-Установщик загрузит CLI на компьютер и подходящий опубликованный daemon на
-Станцию. Перед записью он автоматически перемонтирует `/` в `rw`, установит
-startup hook `/etc/init.d/S99zzbetteryam` и запустит BetterYAMd. При включении
-станции BusyBox init выполнит hook: он повторно перемонтирует `/` в `rw` и
-запустит daemon в фоне. Hook выполняется после остальных `S99`-скриптов;
-скрипт установки отказывается перезаписывать чужой файл с таким именем.
+Установщик загружает CLI на компьютер и daemon для подключённой Станции:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh
 ```
 
-Для конкретной версии передайте версию первым аргументом:
+Для установки конкретной версии передайте номер релиза:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.sh | sh -s -- 0.1.18
 ```
+
+CLI устанавливается в `~/.local/bin`. Основная команда — `byam`; `yam` оставлен
+как совместимый alias. Если команда не найдена, добавьте этот каталог в
+`PATH`.
 
 ### Windows
 
@@ -112,207 +52,118 @@ curl -fsSL https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/Bette
 irm https://raw.githubusercontent.com/Yandex-Station-Universal-Repo/BetterYAM/refs/heads/main/install.ps1 | iex
 ```
 
-### После установки
+### Обновление и удаление
 
-Основная команда — `byam`; `yam` оставлен как совместимый alias. На macOS и
-Linux CLI устанавливается в `~/.local/bin`. Если команда не найдена, добавьте
-этот каталог в `PATH` или вызовите CLI напрямую:
+Установщик выбирает daemon по hostname и прекращает работу, если точной модели
+нет в release manifest. Для удаления из клона репозитория выполните:
 
 ```sh
-~/.local/bin/byam --version
-~/.local/bin/byam --help
+sh install.sh --uninstall
 ```
 
-Установленный на Станцию daemon находится в
-`/data/quazar/betteryam/bin/betteryamd`, его данные — в
-`/data/quazar/betteryam/data`. По умолчанию HTTP API доступен на порту `8099`.
-Адрес CLI можно переопределить через `--url` или `YAM_URL`.
-
-Модель определяется по hostname Станции. Если модель пока не зарегистрирована
-в релизном manifest, установщик остановится, а не установит daemon от другой
-модели. Удаление из клона репозитория выполняется командой `sh install.sh
---uninstall`; она также удаляет daemon с выбранной Станции.
+Подробности установки, перемонтирования файловой системы и startup hook
+приведены в [руководстве по развёртыванию](./docs/DEPLOYMENT.md).
 
 ## Первые команды
 
 ```sh
-byam device                    # профиль и возможности устройства
-byam list                      # установленные пакеты
-byam registry search lights    # поиск в package registry
-byam install package.yap       # установка локального пакета
-byam install nano              # установка пакета из registry
-byam run nano                  # запуск пакета
-byam logs nano                 # журнал пакета
-byam --version                 # версия CLI
+byam device
+byam list
+byam registry search lights
+byam install package.yap
+byam install nano
+byam run nano
+byam logs nano
+byam --help
 ```
 
-Установленные сервисы можно просматривать и обслуживать командами
-`byam service list`, `byam service enable <id>`, `byam service restart <id>` и
-`byam service logs <id>`. Большинство команд имеют `--help`.
+Большинство команд имеют `--help`. Для скриптов используйте JSON, например
+`byam list --json`. Службами можно управлять через `byam service`; полный
+список команд и примеры приведены в [руководстве по пакетам](./docs/PACKAGES.md).
 
-Для скриптов используйте JSON-вывод, например `byam list --json` и
-`byam registry list --json`. Цвет включается в интерактивном терминале;
-управлять им можно через `--color auto|always|never` или `BYAM_COLOR`.
-Подробности и полный список примеров — в [руководстве по пакетам](./docs/PACKAGES.md).
+## API и совместимость
 
-## Веб-панель и API
+Плагины сохраняют привычные Lua-глобальные значения `alice`, `device` и
+`event`, основные вызовы `alice.set`, `alice.off`, `alice.play`,
+`alice.logo.set` и `alice.logo.off`, а также permissions существующего
+контракта.
 
-Daemon предоставляет HTTP API, используемый CLI, Web Panel и binary runtime.
-Профиль устройства возвращает `features` для совместимости и boolean-словарь
-`capabilities` для проверки отдельных возможностей. Например, интерфейс может
-показать Bluetooth status, если доступна `bluetooth.status`, но не показывать
-переключатель питания, если `bluetooth.power` недоступна.
+Ответ `GET /api/device` содержит совместимые `features` и boolean-словарь
+`capabilities`. Проверяйте capability конкретной операции: например,
+`bluetooth.status` не гарантирует доступность `bluetooth.power`. Для LED
+используйте `device.led_count`; не зашивайте число элементов в плагин.
 
-Общая Web Panel встроена в runtime и строит доступные разделы по capabilities
-профиля. Отдельное изображение устройства профилем пока не поддерживается;
-панель использует placeholder. Существующие маршруты описаны в
-[руководстве по подключению Web Panel](./docs/WEB_PANEL_INTEGRATION.md).
+Binary runtime сохраняет `YAM_API_URL`, `YAM_API_TOKEN` и заголовок
+`X-YAM-Token`. Доступность аппаратных API определяется профилем адаптера.
+Подробности:
 
-Основные API-маршруты включают:
-
-- `GET /api/device` — профиль и capabilities;
-- `GET /api/plugins` и `/api/plugins/{id}/...` — пакеты, запуск и журналы;
-- `POST /api/led`, `POST /api/led/off` — управление LED;
-- `/api/wifi/...` — состояние и управление Wi-Fi;
-- `/api/volume`, `/api/bluetooth/...`, `/api/sensors...`, `/api/clock` —
-  соответствующие API, если они реализованы текущим backend.
-
-Все маршруты, запросы, permissions и доступность функций описаны в
-[документации API и развёртывания](./docs/DEPLOYMENT.md#yam-api-и-capability-profile).
-
-## Пакеты и совместимость
-
-Пакет содержит `plugin.toml` в корне и может запускаться как Lua или binary.
-Lua-плагины продолжают получать `alice`, `device` и `event`. Используйте
-минимальные permissions и указывайте требуемые hardware features в
-`[compatibility]`.
-
-После установки binary-пакет с permission `exec` становится shell-командой с
-именем своего package ID (например, `byam install nano` → `nano`). BetterYAM
-создаёт wrapper в `/data/quazar/betteryam/data/bin` и ссылку в `/usr/bin`,
-который входит в исходный `PATH` BusyBox shell, в том числе `adb shell`, если
-системная файловая система доступна для записи.
-Каталог wrapper-ов также добавляется через `/etc/profile.d/betteryam.sh` для
-login shell. Если `/usr/bin/<package-id>` занят, BetterYAM сохраняет
-существующую команду. При read-only системной файловой системе пакет всё
-равно устанавливается, но shell-команда не экспортируется; BetterYAM сообщает
-об этом в журнале. Binary-пакеты запускаются с правами пользователя shell,
-поэтому устанавливайте только доверенные пакеты.
-
-Пример фрагмента манифеста:
-
-```toml
-id = "ambient-lights"
-name = "Ambient lights"
-version = "1.0.0"
-entry = "main.lua"
-permissions = ["led"]
-
-[launch]
-kind = "lua"
-mode = "service"
-path = "main.lua"
-
-[compatibility]
-features = ["led.ring.rgb"]
-```
-
-Binary-пакеты сохраняют runtime-контракт `YAM_API_URL`, `YAM_API_TOKEN` и
-заголовок `X-YAM-Token`. IPC в Lua доступен через `alice.ipc` при наличии
-permissions `ipc.read`/`ipc.control` и allowlist сервисов в `[ipc].services`.
-
-Полные сведения:
-[пакеты и CLI](./docs/PACKAGES.md) ·
-[Lua API](./docs/PLUGIN_API.md) ·
-[функции Lua API](./docs/functions/README.md) ·
-[поддержка устройств](./docs/DEVICE_SUPPORT.md).
+- [Общий Lua API и permissions](./docs/PLUGIN_API.md)
+- [Функции Lua API](./docs/functions/README.md)
+- [Формат пакетов и CLI](./docs/PACKAGES.md)
+- [HTTP API и развёртывание](./docs/DEPLOYMENT.md)
 
 ## Поддержка устройств
 
-У каждого семейства устройств — собственный daemon, который использует общий
-runtime, обнаруживает hardware через свой adapter и объявляет фактические
-capabilities. Общие runtime-поверхности и контракт плагинов должны оставаться
-совместимыми; модельно-специфичные драйверы не следует переносить в общий
-runtime или CLI.
+Mini и Lite используют разные LED backend-ы и профили. Другие аппаратные
+возможности также могут различаться в зависимости от модели, прошивки,
+обнаруженного оборудования и системных интерфейсов. Смотрите
+[матрицу поддержки](./docs/DEVICE_SUPPORT.md).
 
-Чтобы добавить модель, нужно исследовать её hostname, архитектуру и системные
-интерфейсы, реализовать и проверить daemon, добавить запись в корневой
-[`manifest.json`](./manifest.json) и собрать release asset. Не объявляйте
-непроверенные функции доступными и не направляйте неизвестную модель на
-похожее устройство.
-
-Пошаговая инструкция и готовый запрос для coding-agent находятся в
-[руководстве по добавлению устройств](./docs/ADDING_DEVICES.md). Контракт
-общей панели — в [WEB_PANEL_INTEGRATION.md](./docs/WEB_PANEL_INTEGRATION.md).
+Для добавления устройства требуется отдельный adapter и daemon, запись в
+корневом [`manifest.json`](./manifest.json) и проверка совместимости. Следуйте
+[руководству по добавлению устройства](./docs/ADDING_DEVICES.md); общий runtime
+и Lua API не должны содержать модельно-специфичных ветвлений.
 
 ## Сборка и тестирование
 
-Для локальной сборки и установки daemon-а нужны Rust stable, `adb` и
-toolchain для target выбранного устройства из корневого `manifest.json`.
-Запустите общий [скрипт сборки и деплоя](./tools/build-deploy.sh):
+Для локальной сборки и установки daemon-а используйте
+[скрипт сборки и деплоя](./tools/build-deploy.sh):
 
 ```sh
 ./tools/build-deploy.sh
 ```
 
-Без аргументов он предложит выбрать daemon и подключённую по ADB колонку.
-Выбор можно передать аргументами — ID daemon-а и serial устройства:
+Скрипт предложит выбрать daemon и подключённую колонку. Устройство и daemon
+можно указать явно:
 
 ```sh
 ./tools/build-deploy.sh yandexmini 192.168.0.171:5555
 ```
 
-Или использовать именованные параметры. Флаг `--docker` собирает daemon
-в Docker вместо локального cross toolchain:
+Для сборки в Docker добавьте `--docker`. Перед деплоем скрипт сверяет модель
+устройства с aliases daemon-а и при ошибке запускает попытку отката.
 
-```sh
-./tools/build-deploy.sh --device yandexmini --serial 192.168.0.171:5555 --docker
-```
-
-Скрипт собирает stripped release-бинарник, загружает его во временное имя,
-сохраняет предыдущую версию в
-`/data/quazar/betteryam/bin/betteryamd.previous`, заменяет daemon и
-перезапускает его. Если новая версия не запускается, выполняется попытка
-отката. Docker-режиму нужен доступный Docker; без `--docker` настройте
-cross-compilation toolchain соответствующей архитектуры. Не запускайте
-параллельные деплои на одну колонку. Перед установкой скрипт сверяет hostname
-Станции с aliases выбранного daemon-а в manifest и отказывается от несовпадения.
-
-Для разработки и CI доступны стандартные проверки:
+Основные проверки:
 
 ```sh
 cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo test --workspace
 sh -n install.sh
-bash -n tools/build-deploy.sh
+sh -n tools/build-daemons.sh
 ```
 
-Публикация автоматизирована GitHub Actions при push тега `v*`. Перед выпуском
-версия тега должна соответствовать версии CLI в корневом `Cargo.toml`.
-Подробности — в [инструкции по развёртыванию и релизам](./docs/DEPLOYMENT.md).
+Релиз публикуется GitHub Actions при push тега `v*`. Версия тега должна
+соответствовать версии CLI в корневом `Cargo.toml`.
 
 ## Документация
 
 | Тема | Документ |
 | --- | --- |
-| Установка, API, profiles и release-сборка | [DEPLOYMENT.md](./docs/DEPLOYMENT.md) |
-| Lua-контракт и permissions | [PLUGIN_API.md](./docs/PLUGIN_API.md) |
-| Формат пакетов и команды `byam` | [PACKAGES.md](./docs/PACKAGES.md) |
-| Добавление новой модели устройства | [ADDING_DEVICES.md](./docs/ADDING_DEVICES.md) |
-| Точки подключения общей Web Panel | [WEB_PANEL_INTEGRATION.md](./docs/WEB_PANEL_INTEGRATION.md) |
-| API-функции Lua | [functions/](./docs/functions/README.md) |
-| Отличия и ограничения адаптеров | [DEVICE_SUPPORT.md](./docs/DEVICE_SUPPORT.md) |
+| Установка, HTTP API и релизы | [DEPLOYMENT.md](./docs/DEPLOYMENT.md) |
+| Lua API и permissions | [PLUGIN_API.md](./docs/PLUGIN_API.md) |
+| Пакеты и команды CLI | [PACKAGES.md](./docs/PACKAGES.md) |
+| Добавление устройства | [ADDING_DEVICES.md](./docs/ADDING_DEVICES.md) |
+| Интеграция Web Panel | [WEB_PANEL_INTEGRATION.md](./docs/WEB_PANEL_INTEGRATION.md) |
+| Профили и ограничения устройств | [DEVICE_SUPPORT.md](./docs/DEVICE_SUPPORT.md) |
+| Lua-функции | [docs/functions/](./docs/functions/README.md) |
 
 ## Участие в разработке
 
-Исправления, предложения по совместимости и новые backend-ы приветствуются.
-Перед крупным изменением проверьте документацию и действующий API-контракт.
-Для нового устройства приложите подтверждённые model aliases, capabilities,
-архитектуру и результаты проверок на реальном устройстве, если оно доступно.
-Не включайте в репозиторий credentials, токены, пароли, пользовательские данные
-или неочищенные логи.
+Перед изменением проверьте действующий API-контракт. Для нового устройства
+укажите проверенные hostname aliases, архитектуру, capabilities и результаты
+тестирования. Не включайте в репозиторий credentials, пароли, пользовательские
+данные или неочищенные логи.
 
-## Лицензия
-
-BetterYAM распространяется по лицензии [MIT](./LICENSE).
+BetterYAM — самостоятельный проект и не является официальным продуктом
+Яндекса. Лицензия: [MIT](./LICENSE).

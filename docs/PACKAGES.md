@@ -1,6 +1,9 @@
-# Пакеты
+# Пакеты и CLI
 
-`.yap` — ZIP или `tar.gz` с `plugin.toml` в корне. Пути внутри пакета только относительные.
+## Формат пакета
+
+Пакет `.yap` — ZIP- или `tar.gz`-архив с `plugin.toml` в корне. Пути внутри
+пакета должны быть относительными.
 
 ```toml
 id = "ambient-lights"
@@ -18,79 +21,94 @@ path = "main.lua"
 features = ["led.ring.rgb"]
 ```
 
-`oneshot` запускается через `byam run`; включённый `service` восстанавливается после перезапуска BetterYAMd. Lua-сервисы должны регулярно вызывать `alice.sleep` или `alice.set`.
+Указывайте только необходимые `permissions` и аппаратные возможности в
+`[compatibility].features`. Контракт Lua API описан в
+[документации плагинов](./PLUGIN_API.md).
 
-Binary-пакет требует `exec`, должен соответствовать архитектуре колонки
-(обычно AArch64 musl) и может задать `args`, `interpreter = "sh"` и
-`library_paths`. После установки BetterYAM создаёт wrapper в
-`/data/quazar/betteryam/data/bin` и ссылку на него в `/usr/bin`, который входит
-в стандартный `PATH` BusyBox shell на станции, если системная файловая система
-доступна для записи. Это позволяет запускать команду по package ID в том числе
-из `adb shell`, который не загружает login profile.
-Для login shell каталог wrapper-ов также добавляется через
-`/etc/profile.d/betteryam.sh`. Если `/usr/bin/<package-id>` уже занят,
-существующая команда сохраняется, а конфликт записывается в журнал. Если
-системная файловая система read-only, пакет всё равно устанавливается,
-но команда не появится в `adb shell` до тех пор, пока BetterYAMd при старте
-не сможет создать ссылку; ошибка экспорта записывается в журнал daemon-а.
-Команда запускается с package
-директорией как current directory, использует `launch.args` и объявленные
-библиотеки; runtime-переменные `YAM_API_URL` и `YAM_API_TOKEN` ей не выдаются.
-Установка binary-пакета с `exec` разрешает запуск его кода от имени
-пользователя shell — устанавливайте только пакеты, которым доверяете. При
-обновлении и удалении пакета команда автоматически обновляется или удаляется.
-Вывод команд, запущенных через BetterYAM runtime, доступен через
-`byam logs <id>`.
+## Запуск и службы
 
-CLI показывает версию через `byam -v` или `byam --version`. Цветной вывод
-включается автоматически в интерактивном терминале. Режим можно переопределить
-глобальной опцией `--color auto|always|never` или переменной `BYAM_COLOR`;
-`NO_COLOR` отключает цвета в режиме `auto`. JSON-команды `--json` остаются без
-ANSI-кодов, поэтому их вывод можно напрямую передавать другим инструментам.
+- `oneshot` запускается командой `byam run`.
+- Включённый `service` автоматически запускается после перезапуска BetterYAMd.
+- Lua-службы должны регулярно уступать выполнение через `alice.sleep()` или
+  другой подходящий вызов `alice.*`, чтобы остановку можно было обработать.
+
+`byam service` управляет пакетами с `launch.mode = "service"`:
+
+| Команда | Действие |
+| --- | --- |
+| `list` | Показать службы и их состояние |
+| `enable <id>` | Запустить службу и включить автозапуск |
+| `disable <id>` | Остановить службу и отключить автозапуск |
+| `start <id>` | Запустить включённую службу |
+| `stop <id>` | Остановить службу, не меняя автозапуск |
+| `restart <id>` | Перезапустить включённую службу |
+| `logs <id>` | Показать журнал службы |
+
+Прежние команды `byam enable`, `disable`, `stop` и `logs` сохранены. Команда
+`yam` также доступна как совместимый alias `byam`.
+
+## Binary-пакеты
+
+Binary-пакету требуется permission `exec`; исполняемый файл должен подходить
+архитектуре устройства. В манифесте можно задать аргументы, `interpreter = "sh"`
+и `library_paths`.
+
+После установки BetterYAM создаёт wrapper в
+`/data/quazar/betteryam/data/bin` и, если системная файловая система доступна
+для записи, ссылку в `/usr/bin`. Это позволяет вызывать пакет по его ID в
+`adb shell`, даже если login profile не загружен. Для login shell каталог
+wrapper-ов также добавляется в `/etc/profile.d/betteryam.sh`.
+
+Если `/usr/bin/<package-id>` уже занят, существующая команда сохраняется, а
+конфликт записывается в журнал. При read-only системной файловой системе пакет
+устанавливается, но wrapper станет доступен из `adb shell` только после того,
+как daemon сможет создать ссылку. При обновлении или удалении пакета
+управляемая команда также обновляется или удаляется.
+
+Команда запускается из каталога пакета с `launch.args` и указанными
+библиотеками. Ей не передаются `YAM_API_URL` и `YAM_API_TOKEN`. Binary-пакеты
+работают с правами пользователя shell, поэтому устанавливайте только
+доверенные пакеты. Вывод запуска через runtime доступен в `byam logs <id>`.
+
+## Команды `byam`
 
 ```sh
-byam list                         # установленные пакеты и их состояние
-byam list --json                  # тот же список в JSON для скриптов
-byam registry list                # каталог registry
-byam registry search audio        # поиск по ID, имени и описанию
-byam registry list audio          # тот же поиск через list
-byam install package.yap          # локальный архив
-byam install nano                 # последняя версия из registry
-byam install nano 8.0             # конкретная версия registry
-byam registry install nano 8.0    # то же через registry subcommand
-byam registry list --json         # каталог в JSON
-byam enable nano
+byam list
+byam list --json
+byam registry search audio
+byam install package.yap
+byam install nano
+byam install nano 8.0
 byam service list
 byam service enable ambient-lights
-byam service restart ambient-lights
-byam service logs ambient-lights
 byam run nano -- --help
-byam tui nano                     # интерактивный binary oneshot через ADB
-byam stop nano
+byam tui nano
 byam rm nano
 ```
 
-`byam install` принимает путь к существующему `.yap`/`.pkg` архиву или ID
-пакета из registry. Если локальный архив с таким расширением не найден, CLI
-сообщит об ошибке вместо попытки трактовать путь как registry ID. Установка
-показывает имя и версию добавленного пакета; `--json` сохраняет машинный ответ
-daemon. `byam registry pull` оставлен как alias для `byam registry install`.
-Параметры `--registry URL` и `--url URL` можно указывать до или после
-подкоманды; также поддерживаются `YAM_REGISTRY_URL` и `YAM_URL`.
+`byam install` принимает путь к локальному `.yap`/`.pkg`-архиву или ID пакета в
+registry. Если локальный архив с таким расширением не найден, команда завершится
+ошибкой, а не станет трактовать путь как ID. Для пакета из registry можно
+указать версию; без неё устанавливается последняя версия.
 
-`byam service` управляет только пакетами с `launch.mode = "service"`:
-`enable` запускает сервис и сохраняет автозапуск, `disable` останавливает его
-и отключает автозапуск, `start` запускает включённый сервис, `stop` останавливает
-без отключения, `restart` перезапускает включённый сервис, `list` показывает
-установленные сервисы и их состояние, а `logs` выводит журнал сервиса.
-Прежние команды `byam enable`, `byam disable`, `byam stop` и `byam logs`
-сохранены для обратной совместимости. В установках также доступна команда
-`yam` как alias для `byam`.
+`byam registry pull` — alias `byam registry install`. Команды registry
+поддерживают `--registry URL`, а запросы к daemon — `--url URL`; параметры можно
+указывать до или после подкоманды. Также поддерживаются `YAM_REGISTRY_URL` и
+`YAM_URL`.
 
-Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета. Hardware операции маршрутизируются через Device API текущей модели BetterYAMd.
+Версию CLI можно посмотреть через `byam -v` или `byam --version`. Цветной вывод
+автоматически включается в интерактивном терминале. Настройте его глобальной
+опцией `--color auto|always|never` или переменной `BYAM_COLOR`; `NO_COLOR`
+отключает цвета в режиме `auto`. JSON-вывод не содержит ANSI-кодов.
 
-Raw Quasar IPC (`alice.ipc.next`, `send`, `request`) доступен Lua-пакетам с
-permissions `ipc.read` и/или `ipc.control`. Перечислите разрешённые service
-names в `[ipc].services`; см. [Lua API](./PLUGIN_API.md#input-и-ipc) для
-ограничений и примера. Эти Lua bindings не добавляют IPC endpoints в binary
-runtime API.
+## Runtime-контракты
+
+Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`. Передавайте
+токен в заголовке `X-YAM-Token`. Доступность runtime-маршрутов зависит от
+permissions пакета; общий API описан в
+[документации развёртывания](./DEPLOYMENT.md).
+
+Raw Quasar IPC предоставляется только Lua bindings и не добавляет IPC-маршруты
+в binary runtime API. Для Lua задайте `ipc.read` и/или `ipc.control`, а также
+allowlist в `[ipc].services`. Подробнее — в разделе
+[Input и IPC](./PLUGIN_API.md#ipc).

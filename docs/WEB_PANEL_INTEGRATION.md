@@ -68,23 +68,23 @@ placeholder. Не добавляйте в общий frontend ветвления
 | Пакет | `POST /api/plugins/{id}/invoke` | Запустить/перезапустить |
 | Пакет | `POST /api/plugins/{id}/stop` | Остановить |
 | Пакет | `GET /api/plugins/{id}/logs` | Журнал |
-| Настройки | `GET /api/settings`, `PUT /api/settings` | Чтение и сохранение настроек runtime и Wi-Fi setup |
+| Настройки | `GET/PUT /api/settings` | Настройки runtime и Wi-Fi |
 | LED | `POST /api/led` | `{ "colors": ["#RRGGBB", "..."] }`; число цветов определяется профилем |
 | LED | `POST /api/led/off` | Выключить LED |
 | Логотип | `POST /api/logo` | Та же форма кадра, что и `/api/led` |
 | Логотип | `POST /api/logo/off` | Выключить логотип |
 | Датчики (`sensors`) | `GET /api/sensors` | Список датчиков |
 | Датчик (`sensors.read`) | `GET /api/sensors/{sensor}` | Значение выбранного датчика |
-| Часы (`clock`) | `GET /api/clock`, `PUT /api/clock` | Состояние и управление; тело может содержать `time`, `brightness`, `segments` или `off` |
-| Громкость (`volume.get`, `volume.set`) | `GET /api/volume`, `PUT /api/volume` | Установка: `{ "percent": 0..100 }` |
+| Часы (`clock`) | `GET/PUT /api/clock` | Состояние и управление часами |
+| Громкость | `GET/PUT /api/volume` | Чтение и установка уровня `0..100` |
 | Bluetooth (`bluetooth.status`) | `GET /api/bluetooth/status` | Статус Bluetooth |
-| Bluetooth (`bluetooth.power`) | `PUT /api/bluetooth/power` | `{ "on": true }` или `{ "on": false }` |
+| Bluetooth (`bluetooth.power`) | `PUT /api/bluetooth/power` | `{ "on": boolean }` |
 | Wi-Fi (`wifi.status`) | `GET /api/wifi` | Состояние соединения |
-| Wi-Fi (`wifi.networks`) | `GET /api/wifi/networks` | Сохранённые и обнаруженные сети; пароли не возвращаются |
+| Wi-Fi (`wifi.networks`) | `GET /api/wifi/networks` | Сети; пароли не возвращаются |
 | Wi-Fi (`wifi.scan`) | `POST /api/wifi/scan` | Запустить сканирование |
 | Wi-Fi (`wifi.networks`) | `POST /api/wifi/networks` | `{ "ssid": "...", "password": "..." }` |
 | Wi-Fi (`wifi.networks`) | `DELETE /api/wifi/networks/{ssid}` | Удалить сохранённую сеть |
-| Wi-Fi setup (`wifi.ap`) | `GET /api/wifi/setup`, `POST /api/wifi/setup` | Статус и управление; запрос `{ "on": true }` или `{ "on": false }` |
+| Wi-Fi setup (`wifi.ap`) | `GET/POST /api/wifi/setup` | Статус и управление точкой доступа |
 
 Маршруты runtime-плагинов `/api/runtime/{id}/...` имеют отдельную модель
 доступа и токены. Они не являются API управления панелью и не должны
@@ -102,7 +102,7 @@ placeholder. Не добавляйте в общий frontend ветвления
 | Показать часы | `clock`; отдельные операции — `clock.time`, `clock.segments`, `clock.off` |
 | Показать уровень громкости | `volume.get`; управление — `volume.set` |
 | Показать Bluetooth status / power | `bluetooth.status` / `bluetooth.power` |
-| Показать Wi-Fi status, scan, saved networks, AP setup | `wifi.status`, `wifi.scan`, `wifi.networks`, `wifi.ap` |
+| Показать Wi-Fi | `wifi.status`, `wifi.scan`, `wifi.networks`, `wifi.ap` |
 | Показать датчики / чтение / настройку | `sensors.list`, `sensors.read`, `sensors.control` |
 
 Capability описывает поддержку операции устройством, а не её текущее состояние.

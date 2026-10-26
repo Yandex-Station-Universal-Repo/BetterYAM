@@ -1,106 +1,108 @@
 # Lua API
 
-Lua-пакет получает `alice`, `device` и `event`. Укажите минимальный список `permissions` в `plugin.toml`; API без разрешения недоступен.
+Lua-плагин получает три глобальных значения: `alice`, `device` и `event`.
+Аппаратные и системные операции требуют соответствующего permission в
+`plugin.toml`; предоставляйте пакету только необходимые разрешения.
 
-| Permission | API |
+## Permissions
+
+| Permission | Доступ |
 | --- | --- |
-| `led` | `alice.set(colors)`, `off()`, `play(path)`, `logo.set(colors)`, `logo.off()` |
-| `volume` | `alice.volume.get()`, `set(percent)` |
-| `audio` | `alice.audio.play(path)` |
-| `bluetooth` | `alice.bluetooth.status()`, `power()`, `scan()`, `pair()`, `connect()`, `disconnect()`, `remove()` |
-| `display` | `alice.display.backlights()`, `set_backlight()` |
-| `sensors` | `alice.sensors.list()`, `read(id)` |
-| `sensors.control` | `alice.sensors.configure_ambient_light()` |
-| `clock` | `alice.clock.available()`, `is_available()`, `time()`, `segments()`, `off()` |
-| `input` | `alice.input.devices()`, `next_event(timeout_ms)` |
-| `wifi` | `alice.wifi.status()`, `scan()`, `add(ssid, password?)`, `forget(ssid)`, `setup(on)` |
-| `network` | `alice.http.get(url)`, `post(url, body)` |
-| `ipc.alarm` | `alice.ipc.next_alarm(timeout_ms)` |
-| `ipc.speech` | `alice.ipc.next_speech(timeout_ms)` |
-| `ipc.read` | `alice.ipc.next(service, timeout_ms)` |
-| `ipc.control` | `alice.ipc.send(service, message)`; вместе с `ipc.read` — `alice.ipc.request(service, message, timeout_ms)` |
-| `system` | `alice.system.hostname()`, `uptime()`, `meminfo()` |
-| `exec` | `alice.exec(program, args)` |
+| `led` | LED-кольцо и логотип |
+| `volume` | Чтение и изменение громкости |
+| `audio` | Воспроизведение аудиофайлов |
+| `bluetooth` | Статус и управление Bluetooth |
+| `display` | Подсветка дисплея |
+| `sensors` | Перечень и чтение датчиков |
+| `sensors.control` | Настройка датчиков |
+| `clock` | Часы и их сегменты |
+| `input` | Чтение разрешённых input-устройств |
+| `wifi` | Состояние и управление Wi-Fi |
+| `network` | Разрешённые HTTP-запросы |
+| `ipc.alarm`, `ipc.speech` | События будильника и распознанной речи |
+| `ipc.read`, `ipc.control` | Чтение и управление Quasar IPC |
+| `system` | Сведения о системе |
+| `exec` | Запуск разрешённых команд |
 
-`alice.sleep(ms)` доступен всем пакетам и нужен в циклах для отмены запуска.
+Сигнатуры и примеры всех функций приведены в
+[каталоге Lua-функций](./functions/README.md). `alice.sleep(ms)` доступен без
+permission и предназначен для пауз в циклах, чтобы плагин можно было отменить.
 
-Для аппаратных API доступны boolean-проверки без выполнения операции:
-`alice.led.is_available()`, `alice.led.ring.is_available()`,
-`alice.led.ring.rgb.is_available()`, а также
-`alice.volume.is_available()`, `alice.audio.is_available()`,
-`alice.bluetooth.is_available()`, `alice.display.is_available()`,
-`alice.sensors.is_available()`, `alice.clock.is_available()`,
-`alice.input.is_available()`, `alice.sensors.control.is_available()`,
-`alice.ipc.alarm.is_available()` и `alice.ipc.speech.is_available()`.
-`alice.wifi.is_available()` сообщает, доступен ли Wi-Fi adapter.
-Для отдельных возможностей используйте `device.capabilities`, например
-`device.capabilities["clock.segments"]` или
-`device.capabilities["led.ring.12"]`. Capability keys включают API-группы и
-отдельные операции, например `volume.set`, `bluetooth.scan`,
-`display.backlight`, `sensors.ambient_light.configure`, `clock.time`,
-`clock.segments` и `input.next_event`. Значение отсутствующей capability —
-`false`. API сегментов часов остаётся вызываемым как раньше:
-`alice.clock.segments({...})`; у него также есть
-`alice.clock.segments.is_available()`.
+## Устройство и доступность функций
 
-Permission `wifi` предоставляет доступ к сетям устройства и поэтому позволяет
-плагину менять сохранённые подключения или включать точку доступа. Не выдавайте
-его пакетам, которым эти операции не нужны. `alice.wifi.status()` возвращает
-текущую сеть, сохранённые и обнаруженные сети, а также состояние точки доступа;
-пароли в ответ не включаются. `scan()` возвращает `false`, если устройство не
-может сканировать в текущем режиме.
+Таблица `device` содержит `id`, `model`, `architecture`, `led_count`, `features`
+и boolean-словарь `capabilities`. Значения задаёт профиль устройства.
+Плагины должны ориентироваться на возможности, а не на модель или конкретное
+число LED:
 
-`device` содержит `id`, `model`, `architecture`, `led_count`, `features` и
-boolean-словарь `capabilities`, заполненные модельным BetterYAMd.
-`features` сохраняет совместимость с `plugin.toml`. `alice.logo.set` и
-`alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
-использует `device.led_count`; проверку frame выполняет драйвер этой модели.
+```lua
+if device.capabilities["led.ring.rgb"] then
+    local colors = {}
+    for i = 1, device.led_count do
+        colors[i] = "#000000"
+    end
+    colors[1] = "#ff0000"
+    alice.set(colors)
+end
+```
 
-Подробные сигнатуры, permissions, результаты и примеры приведены в общем
-[каталоге функций](./functions/README.md). Это контракт runtime, а не обещание,
-что каждая операция реализована на каждом устройстве. Фактическая доступность
-определяется boolean capabilities из профиля `device`; смотрите
-[матрицу поддержки адаптеров](./DEVICE_SUPPORT.md).
+`features` сохраняет совместимость с `[compatibility].features` в манифесте.
+Проверяйте capability конкретной операции: наличие `bluetooth.status`, например,
+не означает, что доступны `bluetooth.power` или `bluetooth.scan`. Отсутствующая
+capability считается `false`. Функции `is_available()` позволяют проверить
+доступность без аппаратного вызова.
 
-Например, LED API принимает число цветов из `device.led_count`; профиль, а не
-Lua-код плагина, задаёт hardware-specific параметры. Датчики, input, volume,
-audio, Bluetooth и Wi-Fi объявляются доступными только при обнаружении их
-backend. Capability отдельной операции может быть `false`, даже если соседние
-операции той же группы доступны.
+`alice.logo.set` и `alice.logo.off` — совместимые aliases LED-функций.
+Количество цветов в `alice.set(colors)` и `alice.logo.set(colors)` определяется
+через `device.led_count`.
 
-## Совместимость и сеть
+## Совместимость пакета
 
-Указывайте нужные возможности, а не модель:
+В `[compatibility].features` указывайте необходимые возможности, а не модель:
 
 ```toml
 [compatibility]
 features = ["led.ring.rgb"]
+```
 
+Сведения о доступных возможностях текущих адаптеров приведены в
+[матрице поддержки устройств](./DEVICE_SUPPORT.md).
+
+## Сеть
+
+Плагин может обращаться только к разрешённым публичным хостам. Для HTTPS
+перечислите их в манифесте:
+
+```toml
 [network]
 allow = ["api.example.org"]
 ```
 
-`network` допускает HTTPS только к объявленным публичным хостам. Для HTTP добавьте `allow_insecure_http = true`. Локальные и private-адреса запрещены.
+HTTP разрешается только при явном `allow_insecure_http = true`. Loopback- и
+private-адреса запрещены.
 
-## Input и IPC
+## Input
 
-Для `alice.input.next_event` перечислите exact kernel device names; прочие `/dev/input` пакет не получает:
+Плагин получает события только от устройств, перечисленных в
+`[input].devices`. `alice.input.next_event(timeout_ms)` возвращает `nil` по
+тайм-ауту либо таблицу `{device, type, code, value, time_ms}`.
 
 ```toml
 permissions = ["input"]
+
 [input]
 devices = ["mute", "vad_keypad"]
 ```
 
-Функция возвращает `nil` по тайм-ауту либо `{ device, type, code, value, time_ms }`. `alice.ipc.next_alarm` и `next_speech` возвращают `nil` либо событие будильника/распознанной речи. Текст речи — персональные данные: не отправляйте его без явной необходимости и permission `network`.
+## IPC
 
-Raw Quasar IPC работает с бинарными protobuf `QuasarMessage`: `next` возвращает
-Lua binary string или `nil` по тайм-ауту, `send` передаёт binary string сервису,
-а `request` ждёт ответ с тем же `request_id` из protobuf field 1. Максимальный
-timeout — 60 секунд; максимальный размер одного IPC frame — 10 MiB.
+`alice.ipc.next_alarm(timeout_ms)` и
+`alice.ipc.next_speech(timeout_ms)` возвращают `nil` либо событие. Текст
+распознанной речи — персональные данные: обрабатывайте и передавайте его
+только при явной необходимости.
 
-Разрешайте конкретные сервисы в `[ipc].services`; вызовы к другим сервисам
-отклоняются:
+Raw Quasar IPC (`next`, `send`, `request`) доступен при permissions
+`ipc.read` и/или `ipc.control`. Вызовы ограничены allowlist сервисов:
 
 ```toml
 permissions = ["ipc.read", "ipc.control"]
@@ -109,17 +111,19 @@ permissions = ["ipc.read", "ipc.control"]
 services = ["mediad"]
 ```
 
-`ipc.read` открывает только `alice.ipc.next`; `ipc.control` открывает только
-`alice.ipc.send`. `alice.ipc.request` существует только при наличии обоих
-permissions. `ipc.read` и `ipc.control` требуют непустой allowlist; максимум
-16 имён сервисов. `send` и `request` позволяют менять состояние system
-services — выдавайте `ipc.control` только доверенным пакетам и перечисляйте
-минимально необходимые сервисы. На Yandex устройствах daemon находит endpoint
-по `<service>.port` в `/system/vendor/quasar/quasar.cfg`; для настройки адреса
-можно задать `YAM_<SERVICE>_ADDR` как IPv4 loopback `host:port`.
+`ipc.read` открывает только `alice.ipc.next`; `ipc.control` — только
+`alice.ipc.send`. `alice.ipc.request` требует оба permission и ждёт ответ с тем
+же `request_id`, что и в protobuf field 1 исходного сообщения. Максимальный
+тайм-аут — 60 секунд, размер IPC frame — 10 MiB. Allowlist обязателен и может
+содержать не более 16 имён сервисов. `send` и `request` способны менять
+состояние системных сервисов: выдавайте `ipc.control` только доверенным
+пакетам.
 
-Пример приёма сообщения и отправки запроса (protobuf bytes должны быть
-сформированы вашим Lua-кодом или библиотекой protobuf):
+На Yandex-устройствах daemon получает endpoint из `<service>.port` в
+`/system/vendor/quasar/quasar.cfg`. При необходимости адрес можно задать через
+`YAM_<SERVICE>_ADDR` в формате IPv4 loopback `host:port`.
+
+Пример обмена бинарными сообщениями:
 
 ```lua
 local frame = alice.ipc.next("mediad", 1000)

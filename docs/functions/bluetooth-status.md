@@ -6,9 +6,6 @@
 - **Аргументы:** нет.
 - **Результат:** таблица с `powered`, `server_running`,
   `power_control_available`; при ограничении также `power_control_reason`.
-- **Доступность:** проверяйте capability этой операции в
-  `device.capabilities`; отсутствие capability означает, что операция
-  недоступна.
 
 ```lua
 local state = alice.bluetooth.status()
