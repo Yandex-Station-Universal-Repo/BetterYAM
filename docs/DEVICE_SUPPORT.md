@@ -7,15 +7,21 @@
 
 ## Профили устройств
 
-| Профиль | Кольцо LED | Порядок каналов | Датчик приближения |
-| --- | --- | --- | --- |
-| `yandexmini` | 6 RGB-элементов | BGR | Поддерживается профилем |
-| `yandexmicro` (Station Lite) | 3 RGB-элемента | RGB | Не поддерживается |
+| Профиль | Кольцо LED | Порядок каналов | Датчик приближения | Часы |
+| --- | --- | --- | --- | --- |
+| `yandexmini` | 6 RGB-элементов | BGR | Поддерживается профилем | Нет |
+| `yandexmicro` (Station Lite) | 3 RGB-элемента | RGB | Не поддерживается | Нет |
+| `yandexmini3` (Station Mini 3) | 6 RGB-элементов | BGR | Не поддерживается | 4 цифры, 32 сегмента |
 
 Mini использует собственный I2C backend; Lite записывает значения в
-обнаруженные узлы sysfs. Это детали адаптеров, а не часть Lua API. Плагины
-должны использовать `device.led_count` и capabilities `led.ring.rgb` и
-`led.ring.<count>`, не предполагая число элементов или порядок каналов.
+обнаруженные узлы sysfs; Mini 3 пишет кадр в framebuffer логотипа. Это детали
+адаптеров, а не часть Lua API. Плагины должны использовать `device.led_count`
+и capabilities `led.ring.rgb` и `led.ring.<count>`, не предполагая число
+элементов или порядок каналов.
+
+Часы adapter подключает необязательным `ClockBackend`; без него capabilities
+`clock.*` равны `false`. Флаг `sensors_ambient_light` в профиле adapter-а
+включает поиск IIO-датчиков освещённости (`kind: "ambient_light"`).
 
 ## Capability-driven доступность
 
@@ -30,6 +36,47 @@ capabilities из `GET /api/device` или соответствующий мет
 питанием — отдельные возможности; объявляйте scan, pair и connect только при
 наличии подходящего backend. Аналогично проверяйте capabilities для громкости,
 аудио, дисплея, часов, input, IPC и Wi-Fi.
+
+## Yandex Mini 3
+
+Daemon `yandexmini3` выбирается по hostname `Yandex-Mini3-XXXX` (manifest ID
+`yandex-mini3`). Ядро колонки AArch64, userland — 32-bit ARMhf с glibc, поэтому
+daemon собирается статическим `aarch64-unknown-linux-musl`, а профиль сообщает
+`architecture: "aarch64"`: статические AArch64 musl binary-пакеты запускаются,
+динамически слинкованные AArch64-программы не найдут системных библиотек.
+
+- **LED ring:** `led.ring.rgb`, `led.ring.6`, `led.pattern.v1`. Кольцо — framebuffer
+  `/dev/fb0` 6×1 точек по 24 бита в порядке BGR; daemon проверяет геометрию по
+  `/sys/class/graphics/fb0` и без неё не запускается. Значения пишутся как есть,
+  без гамма- и цветокоррекции. Во время разговора с Алисой прошивка рисует свои
+  анимации поверх кадра плагина.
+- **Часы:** `clock`, `clock.time`, `clock.segments`, `clock.off` и feature
+  `display.clock.segment.v1`, если доступны все 32 сегмента
+  `/sys/class/leds/bergamot:white:clock*`. `GET /api/clock` возвращает их имена:
+  `A0`…`G3` (сегменты A–G четырёх позиций слева направо), `DEGREE`, `DH`, `DL`
+  (двоеточие) и `DM`. `segments` задаёт кадр целиком: неперечисленные сегменты
+  гасятся. `time` принимает `HH:MM`, `H:MM` или до четырёх символов из цифр,
+  `-` и пробелов. `off` возвращает часы прошивке: daemon сразу рисует текущее
+  время в формате 24 ч на штатной яркости (`clock_display_settings.dat`,
+  часовой пояс — из `geosync.state`), чтобы следующая смена минуты у прошивки
+  не оставила погасших сегментов; если штатные часы выключены, дисплей гасится.
+  Прошивка продолжает рисовать время на смене минуты и анимации Алисы поверх
+  кадра плагина, поэтому плагин, которому нужен постоянный кадр, должен
+  периодически его обновлять.
+- **Громкость:** ALSA control `Master` на card 0 (0..255).
+- **Аудио:** `aplay` в устройство по умолчанию — общий dmix прошивки, Алиса
+  продолжает работать.
+- **Сенсоры:** ambient light sensor LTR-308 через IIO
+  (`in_intensity_input`), `kind: "ambient_light"`, `unit: "lux"`, capability
+  `sensors.ambient_light`. Proximity sensor нет. `sensors.ambient_light.configure`
+  недоступна: усиление и время интеграции датчика перенастраивает прошивка.
+- **Input:** `gpio-keys` и сенсорные кнопки `aw933xx` через Linux input.
+- **Bluetooth:** `bluetooth.status` по `rfkill`; сервер — BlueZ `bluetoothd`.
+  Управление питанием недоступно: скрипта питания BSA в прошивке нет.
+- **Wi-Fi:** `wpa_cli`; `hostapd` в прошивке нет, поэтому `wifi.ap` равна
+  `false`.
+- **Недоступно:** `display`, `sensors.proximity`, `sensors.control`,
+  `ipc.alarm`, `ipc.speech`, `bluetooth.power`.
 
 ## Добавление устройства
 

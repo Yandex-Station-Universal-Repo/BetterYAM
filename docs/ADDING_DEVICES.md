@@ -14,7 +14,8 @@
 Общий runtime не должен содержать модельные sysfs-пути, I2C-параметры или
 фиксированное число LED. Для примеров см. адаптеры
 [`yandexmini/adapter.rs`](../yandexmini/adapter.rs) и
-[`yandexmicro/adapter.rs`](../yandexmicro/adapter.rs). Не переносите их
+[`yandexmicro/adapter.rs`](../yandexmicro/adapter.rs), адаптер с backend-ом
+часов — [`yandexmini3/adapter.rs`](../yandexmini3/adapter.rs). Не переносите их
 аппаратные параметры на новую модель без проверки.
 
 ## До начала работы
