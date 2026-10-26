@@ -14,7 +14,7 @@ command -v python3 >/dev/null 2>&1 || {
   exit 2
 }
 
-python3 - "$ROOT" "$MANIFEST" "$DIST_DIR" <<'PY'
+python3 - "$ROOT" "$MANIFEST" "$DIST_DIR" ${3:+"$3"} <<'PY'
 import hashlib
 import json
 import os

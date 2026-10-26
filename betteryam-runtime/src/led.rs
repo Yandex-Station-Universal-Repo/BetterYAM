@@ -1,4 +1,6 @@
-use crate::device::{AdapterProfile, ColorOrder, DeviceAdapter, LedBackend};
+use crate::device::{
+    AdapterProfile, ClockBackend, ClockCommand, ColorOrder, DeviceAdapter, LedBackend,
+};
 use anyhow::{bail, Context, Result};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -38,8 +40,41 @@ pub struct DeviceInfo {
     pub capabilities: HashMap<String, bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ClockRequest {
+    #[serde(default)]
+    time: Option<String>,
+    #[serde(default)]
+    brightness: Option<u8>,
+    #[serde(default)]
+    segments: Option<HashMap<String, u8>>,
+    #[serde(default)]
+    off: bool,
+}
+
+const DEFAULT_CLOCK_BRIGHTNESS: u8 = 170;
+
+fn clock_command(body: Option<Value>) -> Result<ClockCommand> {
+    let request: ClockRequest =
+        serde_json::from_value(body.context("clock request body is required")?)
+            .context("invalid clock request")?;
+    if request.off {
+        Ok(ClockCommand::Off)
+    } else if let Some(segments) = request.segments {
+        Ok(ClockCommand::Segments(segments))
+    } else if let Some(text) = request.time {
+        Ok(ClockCommand::Time {
+            text,
+            brightness: request.brightness.unwrap_or(DEFAULT_CLOCK_BRIGHTNESS),
+        })
+    } else {
+        bail!("pass time, segments or off=true")
+    }
+}
+
 pub struct Led {
     backend: Arc<dyn LedBackend>,
+    clock: Option<Arc<dyn ClockBackend>>,
     adapter: AdapterProfile,
 }
 
@@ -51,8 +86,16 @@ impl Led {
         }
         Ok(Self {
             backend: Arc::from(adapter.create_led_backend()?),
+            clock: adapter.create_clock_backend().map(Arc::from),
             adapter: info,
         })
+    }
+
+    pub fn clock_segments(&self) -> Vec<String> {
+        self.clock
+            .as_ref()
+            .map(|clock| clock.segments())
+            .unwrap_or_default()
     }
 
     pub async fn draw(&self, colors: Vec<String>) -> Result<()> {
@@ -100,7 +143,7 @@ impl Led {
         if audio_available {
             features.extend(["audio".into(), "audio.play".into()]);
         }
-        let sensors_available = crate::sensors::available().await;
+        let sensors_available = crate::sensors::available(self.adapter.sensors_ambient_light).await;
         if sensors_available {
             features.extend([
                 "sensors".into(),
@@ -110,6 +153,9 @@ impl Led {
             if self.adapter.sensors_proximity {
                 features.push("sensors.proximity".into());
             }
+            if self.adapter.sensors_ambient_light {
+                features.push("sensors.ambient_light".into());
+            }
         }
         let bluetooth_capabilities = crate::bluetooth::availability().await?;
         if bluetooth_capabilities.status {
@@ -117,6 +163,17 @@ impl Led {
         }
         if bluetooth_capabilities.power {
             features.push("bluetooth.power".into());
+        }
+        let clock_available = self.clock.is_some();
+        if clock_available {
+            features.extend([
+                "clock".into(),
+                "clock.available".into(),
+                "clock.time".into(),
+                "clock.segments".into(),
+                "clock.off".into(),
+                "display.clock.segment.v1".into(),
+            ]);
         }
         let wifi_available = crate::wifi::available();
         if wifi_available {
@@ -135,9 +192,11 @@ impl Led {
             ("led.ring.rgb".into(), true),
             (format!("led.ring.{led_count}"), true),
             ("led.pattern".into(), true),
-            ("clock".into(), false),
-            ("clock.segments".into(), false),
-            ("clock.time".into(), false),
+            ("clock".into(), clock_available),
+            ("clock.available".into(), clock_available),
+            ("clock.time".into(), clock_available),
+            ("clock.segments".into(), clock_available),
+            ("clock.off".into(), clock_available),
             ("volume".into(), volume_available),
             ("volume.get".into(), volume_available),
             ("volume.set".into(), volume_available),
@@ -153,6 +212,10 @@ impl Led {
             (
                 "sensors.proximity".into(),
                 sensors_available && self.adapter.sensors_proximity,
+            ),
+            (
+                "sensors.ambient_light".into(),
+                sensors_available && self.adapter.sensors_ambient_light,
             ),
             ("sensors.control".into(), false),
             ("input".into(), input_available),
@@ -176,7 +239,8 @@ impl Led {
 
     pub async fn api_json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
         if method == Method::GET && path == "sensors" {
-            let sensors = tokio::task::spawn_blocking(crate::sensors::list)
+            let ambient_light = self.adapter.sensors_ambient_light;
+            let sensors = tokio::task::spawn_blocking(move || crate::sensors::list(ambient_light))
                 .await
                 .context("sensor list task failed")??;
             return Ok(serde_json::to_value(sensors)?);
@@ -187,9 +251,11 @@ impl Led {
                 bail!("invalid sensor ID")
             }
             let id = id.to_owned();
-            let sensor = tokio::task::spawn_blocking(move || crate::sensors::read(&id))
-                .await
-                .context("sensor read task failed")??;
+            let ambient_light = self.adapter.sensors_ambient_light;
+            let sensor =
+                tokio::task::spawn_blocking(move || crate::sensors::read(&id, ambient_light))
+                    .await
+                    .context("sensor read task failed")??;
             return Ok(serde_json::to_value(sensor)?);
         }
         if method == Method::GET && path == "input/devices" {
@@ -206,6 +272,17 @@ impl Led {
         }
         if path.starts_with("bluetooth/") {
             return crate::bluetooth::api_json(method, path, body).await;
+        }
+        if method == Method::PUT && path == "clock" {
+            let clock = self
+                .clock
+                .clone()
+                .context("device does not provide clock segments")?;
+            let command = clock_command(body)?;
+            tokio::task::spawn_blocking(move || clock.apply(command))
+                .await
+                .context("clock write task failed")??;
+            return Ok(Value::Null);
         }
         bail!(
             "device does not provide this operation yet: {} /{}",
@@ -331,6 +408,30 @@ mod tests {
         );
         assert!(frame_channels(&colors, 2, ColorOrder::Rgb).is_err());
         assert!(frame_channels(&["bad".into()], 1, ColorOrder::Rgb).is_err());
+    }
+
+    #[test]
+    fn clock_requests_become_backend_commands() {
+        assert_eq!(
+            clock_command(Some(serde_json::json!({"time": "12:34"}))).unwrap(),
+            ClockCommand::Time {
+                text: "12:34".into(),
+                brightness: DEFAULT_CLOCK_BRIGHTNESS
+            }
+        );
+        assert_eq!(
+            clock_command(Some(
+                serde_json::json!({"segments": {"A0": 9}, "time": "1"})
+            ))
+            .unwrap(),
+            ClockCommand::Segments(HashMap::from([("A0".into(), 9)]))
+        );
+        assert_eq!(
+            clock_command(Some(serde_json::json!({"off": true, "time": "1"}))).unwrap(),
+            ClockCommand::Off
+        );
+        assert!(clock_command(Some(serde_json::json!({"brightness": 3}))).is_err());
+        assert!(clock_command(None).is_err());
     }
 
     #[test]

@@ -145,7 +145,8 @@ fn status() -> Result<Value> {
     let capabilities = capabilities()?;
     Ok(json!({
         "powered": radio.powered,
-        "server_running": process_running("bsa_server", None)?,
+        "server_running": process_running("bsa_server", None)?
+            || process_running("bluetoothd", None)?,
         "power_control_available": capabilities.power,
         "power_control_reason": capabilities.power_reason,
     }))

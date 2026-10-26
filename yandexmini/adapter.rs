@@ -15,6 +15,7 @@ impl DeviceAdapter for YandexMini {
             led_count: LED_COUNT,
             color_order: ColorOrder::Bgr,
             sensors_proximity: true,
+            sensors_ambient_light: false,
         }
     }
 

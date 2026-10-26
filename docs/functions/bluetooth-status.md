@@ -4,8 +4,9 @@
 
 - **Permission:** `bluetooth`
 - **Аргументы:** нет.
-- **Результат:** таблица с `powered`, `server_running`,
-  `power_control_available`; при ограничении также `power_control_reason`.
+- **Результат:** таблица с `powered`, `server_running` (работает `bsa_server`
+  или BlueZ `bluetoothd`), `power_control_available`; при ограничении также
+  `power_control_reason`.
 
 ```lua
 local state = alice.bluetooth.status()

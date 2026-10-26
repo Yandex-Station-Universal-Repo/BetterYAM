@@ -4,8 +4,8 @@
 
 - `betteryam-runtime/` contains the shared daemon HTTP API, package manager,
   Lua bridge and hardware adapter traits.
-- `yandexmini/` and `yandexmicro/` contain daemon entry points and
-  device-specific hardware adapters.
+- `yandexmini/`, `yandexmicro/` and `yandexmini3/` contain daemon entry points
+  and device-specific hardware adapters.
 - `betteryam-runtime/src/web/` contains the UI embedded in each daemon.
 - `src/bin/yam.rs` builds `byam`, the command-line client.
 - `examples/` contains source trees for `.yap` packages.

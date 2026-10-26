@@ -116,7 +116,8 @@ Capability описывает поддержку операции устройс
 - `betteryam-runtime/src/web/index.html` — общая встроенная панель и пример вызовов API.
 - `betteryam-runtime/src/lib.rs` — HTTP routes, `DeviceProfile` и обработчики API.
 - `betteryam-runtime/src/led.rs` — общий профиль capabilities и LED API.
-- `yandexmini/adapter.rs`, `yandexmicro/adapter.rs` — модельные hardware adapters.
+- `yandexmini/adapter.rs`, `yandexmicro/adapter.rs`, `yandexmini3/adapter.rs` —
+  модельные hardware adapters.
 - `docs/DEPLOYMENT.md` — описание общего Device API и capabilities.
 
 Общий frontend встраивается в daemon при сборке. Модельные adapters
