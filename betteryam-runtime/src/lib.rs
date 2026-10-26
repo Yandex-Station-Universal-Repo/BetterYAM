@@ -3033,6 +3033,22 @@ async fn wait_for_lan_ipv4() -> Ipv4Addr {
     }
 }
 
+pub fn validate_listen_address(addr: &SocketAddr) -> Result<()> {
+    if addr.ip().is_unspecified() {
+        bail!(
+            "binding management listener to wildcard address ({}) is not allowed to prevent exposing management API on provisioning AP; specify a LAN IP or omit --listen",
+            addr.ip()
+        );
+    }
+    if addr.ip() == wifi_setup::AP_IP {
+        bail!(
+            "binding management listener to Wi-Fi setup AP address ({}) is not allowed",
+            wifi_setup::AP_IP
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -3057,7 +3073,10 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
     let wifi = wifi_setup::Setup::new(args.data_dir.clone(), settings.clone());
     wifi.start(tokio::runtime::Handle::current());
     let listen = match args.listen {
-        Some(listen) => listen,
+        Some(listen) => {
+            validate_listen_address(&listen)?;
+            listen
+        }
         None => SocketAddr::new(wait_for_lan_ipv4().await.into(), 8099),
     };
     let loopback = SocketAddr::new(
@@ -3157,24 +3176,6 @@ pub async fn run(adapter: impl device::DeviceAdapter + 'static) -> Result<()> {
     Ok(())
 }
 
-async fn guard_ap_management(
-    headers: HeaderMap,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Result<axum::response::Response, StatusCode> {
-    if let Some(host) = headers.get("host").and_then(|h| h.to_str().ok()) {
-        let host_name = host.split(':').next().unwrap_or(host);
-        if host_name == wifi_setup::AP_IP.to_string() {
-            tracing::warn!(
-                host,
-                "refusing management API request directed to provisioning AP"
-            );
-            return Err(StatusCode::FORBIDDEN);
-        }
-    }
-    Ok(next.run(request).await)
-}
-
 fn runtime_router(app: App) -> Router {
     Router::new()
         .route("/api/runtime/:id/device", get(runtime_device))
@@ -3256,8 +3257,7 @@ fn management_router(app: App, web: &WebSettings) -> Router {
             .route("/api/wifi/networks/:ssid", delete(delete_wifi_network))
             .route("/api/wifi/setup", get(get_wifi_setup).post(post_wifi_setup))
             .route("/api/logo", post(logo_set))
-            .route("/api/logo/off", post(logo_off))
-            .layer(axum::middleware::from_fn(guard_ap_management));
+            .route("/api/logo/off", post(logo_off));
     }
     router.with_state(app)
 }
@@ -3764,7 +3764,8 @@ path = "nano/bin/nano"
     }
 
     #[tokio::test]
-    async fn ap_facing_listener_cannot_reach_unauthenticated_management_endpoints() {
+    async fn ap_facing_listener_cannot_reach_unauthenticated_management_endpoints_even_with_regular_host(
+    ) {
         let temporary =
             std::env::temp_dir().join(format!("betteryam-ap-portal-{}", Uuid::new_v4()));
         let setup =
@@ -3802,66 +3803,49 @@ path = "nano/bin/nano"
             ("POST", "/api/logo"),
         ];
 
-        for (method, endpoint) in unauthenticated_management_endpoints {
-            let url = format!("http://127.0.0.1:{port}{endpoint}");
-            let req = match method {
-                "GET" => client.get(&url),
-                "POST" => client.post(&url),
-                "PUT" => client.put(&url),
-                "DELETE" => client.delete(&url),
-                _ => unreachable!(),
-            };
-            let resp = req.send().await.unwrap();
-            assert_ne!(
-                resp.status(),
-                reqwest::StatusCode::OK,
-                "management endpoint {endpoint} must not return 200 OK on AP-facing listener"
-            );
-            assert!(
-                resp.status().is_redirection() || resp.status().is_client_error(),
-                "management endpoint {endpoint} on AP-facing listener returned status {}",
-                resp.status()
-            );
+        let regular_hosts = [
+            format!("127.0.0.1:{port}"),
+            format!("localhost:{port}"),
+            "station.local".to_string(),
+            "192.168.1.100:8099".to_string(),
+        ];
+
+        for host in regular_hosts {
+            for (method, endpoint) in unauthenticated_management_endpoints {
+                let url = format!("http://127.0.0.1:{port}{endpoint}");
+                let req = match method {
+                    "GET" => client.get(&url),
+                    "POST" => client.post(&url),
+                    "PUT" => client.put(&url),
+                    "DELETE" => client.delete(&url),
+                    _ => unreachable!(),
+                };
+                let resp = req.header("Host", &host).send().await.unwrap();
+                assert_ne!(
+                    resp.status(),
+                    reqwest::StatusCode::OK,
+                    "management endpoint {endpoint} must not return 200 OK on AP-facing listener with Host {host}"
+                );
+                assert!(
+                    resp.status().is_redirection() || resp.status().is_client_error(),
+                    "management endpoint {endpoint} on AP-facing listener returned unexpected status {} with Host {host}",
+                    resp.status()
+                );
+            }
         }
         let _ = fs::remove_dir_all(temporary);
     }
 
-    #[tokio::test]
-    async fn management_endpoints_reject_ap_interface_requests() {
-        let temporary = std::env::temp_dir().join(format!("betteryam-ap-guard-{}", Uuid::new_v4()));
-        let app = test_app(temporary.clone());
-        let web = WebSettings::default();
-        let router = management_router(app, &web);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
-
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
-
-        // Requests targeting the provisioning AP Host are rejected
-        let resp = client
-            .get(format!("http://127.0.0.1:{port}/api/plugins"))
-            .header("Host", format!("{}:8099", wifi_setup::AP_IP))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
-
-        // Requests with a regular host are permitted
-        let resp = client
-            .get(format!("http://127.0.0.1:{port}/api/plugins"))
-            .header("Host", format!("127.0.0.1:{port}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), reqwest::StatusCode::OK);
-
-        let _ = fs::remove_dir_all(temporary);
+    #[test]
+    fn management_listener_rejects_wildcard_and_ap_addresses() {
+        assert!(validate_listen_address(&"0.0.0.0:8099".parse().unwrap()).is_err());
+        assert!(validate_listen_address(&"[::]:8099".parse().unwrap()).is_err());
+        assert!(
+            validate_listen_address(&format!("{}:8099", wifi_setup::AP_IP).parse().unwrap())
+                .is_err()
+        );
+        assert!(validate_listen_address(&"192.168.1.50:8099".parse().unwrap()).is_ok());
+        assert!(validate_listen_address(&"127.0.0.1:8099".parse().unwrap()).is_ok());
     }
 
     #[tokio::test]
