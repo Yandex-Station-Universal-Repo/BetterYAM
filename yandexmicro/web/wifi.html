@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>BetterYAM — настройка Wi-Fi</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; --bg:#10131a; --panel:#191e28; --line:#30394a; --text:#edf1f8; --muted:#a3aec0; --accent:#8baaff; --warn:#ffd27a; --good:#77d6a3; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:1rem; background:var(--bg); color:var(--text); }
+    main { width:min(720px,100%); margin:2rem auto; }
+    section { margin:1rem 0; padding:1.2rem; border:1px solid var(--line); border-radius:16px; background:var(--panel); }
+    h1 { margin:.1rem 0; font-size:1.8rem; } h2 { margin:0 0 .3rem; font-size:1.15rem; }
+    p,small { color:var(--muted); } button,input { font:inherit; }
+    button { padding:.6rem .9rem; border:1px solid var(--line); border-radius:10px; background:#202735; color:var(--text); cursor:pointer; }
+    button:hover { border-color:var(--accent); } button:disabled { opacity:.5; cursor:not-allowed; }
+    input { width:100%; padding:.65rem .75rem; border:1px solid var(--line); border-radius:10px; background:#111722; color:var(--text); }
+    label { display:grid; gap:.3rem; margin:.7rem 0; color:var(--muted); }
+    .head,.network,.actions { display:flex; align-items:center; justify-content:space-between; gap:.7rem; }
+    .network { padding:.75rem 0; border-top:1px solid var(--line); }
+    .network-info { min-width:0; overflow-wrap:anywhere; } .network-info small { display:block; }
+    .actions { justify-content:flex-start; flex-wrap:wrap; margin-top:.8rem; }
+    #notice { min-height:1.5rem; color:var(--muted); overflow-wrap:anywhere; }
+    #notice.warn { color:var(--warn); } #notice.good { color:var(--good); }
+    @media(max-width:480px) { main { margin:0 auto; } section { padding:1rem; } .network { align-items:flex-start; flex-wrap:wrap; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>BetterYAM</h1><p>Настройка подключения к Wi-Fi</p></header>
+    <section>
+      <div class="head"><h2>Сети поблизости</h2><button id="scan" type="button">Обновить</button></div>
+      <p id="state">Загрузка состояния…</p>
+      <p id="notice" role="status" aria-live="polite"></p>
+      <div id="networks"><small>Ищем сети…</small></div>
+    </section>
+    <section>
+      <h2>Подключиться вручную</h2>
+      <p>Пароль преобразуется в ключ на колонке и не сохраняется в открытом виде.</p>
+      <form id="connect">
+        <label>Имя сети (SSID)<input id="ssid" required maxlength="32" autocomplete="off"></label>
+        <label>Пароль<input id="password" type="password" maxlength="63" autocomplete="new-password" placeholder="Пусто для открытой сети"></label>
+        <div class="actions"><button type="submit">Подключить</button><button id="stop-ap" type="button" hidden>Выключить точку доступа</button></div>
+      </form>
+    </section>
+  </main>
+<script>
+const $ = id => document.getElementById(id);
+let transitioning = false;
+async function request(path, options = {}) {
+  const response = await fetch('/api' + path, options);
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).error || message; } catch {}
+    throw new Error(message);
+  }
+  return response.status === 204 ? null : response.json().catch(() => null);
+}
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
+}
+function signal(dbm) {
+  return dbm >= -55 ? 'отличный сигнал' : dbm >= -67 ? 'хороший сигнал' : dbm >= -75 ? 'слабый сигнал' : 'очень слабый сигнал';
+}
+function row(network, current, ap) {
+  const detail = `${signal(network.signal_dbm)} · ${network.freq >= 5000 ? '5 ГГц' : '2,4 ГГц'}${network.secure ? '' : ' · открытая'}${network.saved ? ' · сохранена' : ''}`;
+  return `<div class="network"><div class="network-info"><strong>${escapeHtml(network.ssid)}</strong><small>${escapeHtml(detail)}</small></div>
+    ${network.ssid === current ? '<small>подключена</small>' : `<button type="button" data-action="pick" data-ssid="${escapeHtml(network.ssid)}">Выбрать</button>`}
+    ${network.saved && network.ssid !== current ? `<button type="button" data-action="forget" data-ssid="${escapeHtml(network.ssid)}" ${ap ? 'disabled' : ''}>Забыть</button>` : ''}
+  </div>`;
+}
+async function load() {
+  try {
+    const wifi = await request('/wifi');
+    const setup = wifi.setup || {};
+    const current = wifi.current?.ssid || null;
+    $('state').textContent = setup.phase === 'ap'
+      ? `Телефон подключён к точке «${setup.ap_ssid || 'BetterYAM'}» · ${setup.ap_ip}. Выберите сеть для колонки.`
+      : wifi.current ? `Колонка подключена к «${wifi.current.ssid}» · ${wifi.current.ip || ''}` : 'Колонка пока не подключена к Wi-Fi.';
+    const saved = new Set(wifi.saved || []);
+    const networks = (wifi.around || []).map(n => ({ ...n, saved: saved.has(n.ssid) }));
+    $('networks').innerHTML = networks.map(n => row(n, current, setup.phase === 'ap')).join('')
+      || '<small>Сетей поблизости не видно. Можно ввести SSID вручную.</small>';
+    $('stop-ap').hidden = setup.phase !== 'ap';
+    $('notice').className = setup.failed || setup.error ? 'warn' : '';
+    $('notice').textContent = setup.error || (setup.failed
+      ? 'Подключиться к сохранённой сети не удалось. Проверьте пароль и попробуйте ещё раз.'
+      : setup.pending ? `Проверяем подключение к «${setup.pending}»…` : '');
+    if (transitioning && setup.phase !== 'ap' && !setup.pending) {
+      transitioning = false;
+      $('notice').textContent = 'Колонка вернулась в режим клиента. Откройте панель по новому адресу устройства.';
+    }
+  } catch (error) {
+    if (!transitioning) $('state').textContent = `Не удалось получить состояние Wi-Fi: ${error.message}`;
+  }
+}
+$('connect').addEventListener('submit', async event => {
+  event.preventDefault();
+  const ssid = $('ssid').value.trim(), password = $('password').value;
+  if (password && (password.length < 8 || password.length > 63)) {
+    $('notice').className = 'warn';
+    $('notice').textContent = 'Пароль должен содержать 8–63 символа (или быть пустым для открытой сети).';
+    return;
+  }
+  try {
+    const result = await request('/wifi/networks', {
+      method: 'POST', headers: { 'content-type':'application/json' },
+      body: JSON.stringify({ ssid, password })
+    });
+    $('password').value = '';
+    $('notice').className = 'good';
+    $('notice').textContent = result?.leaving
+      ? `Колонка переключается на «${ssid}». Телефон отключится от точки доступа; подключитесь к той же сети.`
+      : `Сеть «${ssid}» сохранена. Подключение может занять некоторое время.`;
+    transitioning = !!result?.leaving;
+    await load();
+  } catch (error) {
+    $('notice').className = 'warn';
+    $('notice').textContent = `Не удалось подключиться: ${error.message}`;
+  }
+});
+$('scan').addEventListener('click', async () => {
+  try {
+    const result = await request('/wifi/scan', { method:'POST' });
+    $('notice').className = '';
+    $('notice').textContent = result?.started ? 'Сканирование запущено…' : 'Сканирование недоступно в режиме точки доступа.';
+    if (result?.started) setTimeout(load, 3500);
+  } catch (error) {
+    $('notice').className = 'warn';
+    $('notice').textContent = error.message;
+  }
+});
+$('stop-ap').addEventListener('click', async () => {
+  if (!confirm('Отключить точку доступа? Телефон потеряет соединение.')) return;
+  try {
+    await request('/wifi/setup', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({on:false}) });
+    transitioning = true;
+    $('notice').className = 'good';
+    $('notice').textContent = 'Отключаем точку доступа…';
+  } catch (error) {
+    $('notice').className = 'warn';
+    $('notice').textContent = error.message;
+  }
+});
+document.addEventListener('click', async event => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  if (button.dataset.action === 'pick') {
+    $('ssid').value = button.dataset.ssid;
+    $('password').focus();
+    return;
+  }
+  const ssid = button.dataset.ssid;
+  if (!confirm(`Забыть сеть «${ssid}»?`)) return;
+  try { await request(`/wifi/networks/${encodeURIComponent(ssid)}`, { method:'DELETE' }); await load(); }
+  catch (error) { $('notice').className = 'warn'; $('notice').textContent = error.message; }
+});
+load();
+setInterval(load, 4000);
+</script>
+</body>
+</html>
