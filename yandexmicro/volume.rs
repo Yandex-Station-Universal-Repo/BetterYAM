@@ -7,10 +7,7 @@ use std::{
 
 const MIXER_CARD: &str = "0";
 const MIXER_CONTROL: &str = "Master";
-const STATION_AMIXER_PATHS: &[&str] = &[
-    "/usr/bin/amixer",
-    "/system/workdir/bin/amixer",
-];
+const STATION_AMIXER_PATHS: &[&str] = &["/usr/bin/amixer", "/system/workdir/bin/amixer"];
 const STATION_ALSA_LIBS: &str = "/bkupgrade/data/bundle/ap2/libs:/system/workdir/lib";
 
 #[derive(Debug, PartialEq, Eq)]

@@ -360,12 +360,8 @@ mod tests {
 
     #[test]
     fn maps_rgb_colors_to_micro_channels_and_checks_count() {
-        let frame = frame_channels(&[
-            "#123456".into(),
-            "#ffffff".into(),
-            "#000000".into(),
-        ])
-        .unwrap();
+        let frame =
+            frame_channels(&["#123456".into(), "#ffffff".into(), "#000000".into()]).unwrap();
         assert_eq!(&frame[..3], &[0x12, 0x34, 0x56]);
         assert_eq!(&frame[3..6], &[0xff, 0xff, 0xff]);
         assert_eq!(&frame[6..9], &[0x00, 0x00, 0x00]);
