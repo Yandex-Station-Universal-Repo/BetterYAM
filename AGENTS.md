@@ -2,10 +2,10 @@
 
 ## Repository layout
 
-- `yandexmini/main.rs` builds the Yandex Mini `betteryamd` HTTP API, package manager and Lua bridge.
-- `yandexmini/led.rs` implements the Mini LED hardware adapter.
+- `betteryam-runtime/` contains the shared daemon HTTP API, package manager, Lua bridge and hardware adapter traits.
+- `yandexmini/` and `yandexmicro/` contain thin daemon entry points and device-specific hardware adapters.
+- `betteryam-runtime/src/web/` contains the UI embedded in each daemon.
 - `src/bin/yam.rs` builds `byam`, the command-line client.
-- `yandexmini/web/index.html` is embedded in the Mini daemon.
 - `examples/` contains source trees for `.yap` packages.
 - `docs/` is the public developer documentation.
 - `docs/ADDING_DEVICES.md` guides contributors and coding agents through adding a device daemon.
@@ -19,15 +19,18 @@
 Run these after changing Rust or shell files:
 
 ```sh
-cargo fmt --check
-cargo check
+cargo fmt --all --check
+cargo check --workspace
 sh -n install.sh
 ```
 
-For a Station Lite / Micro target, build the AArch64 musl binary in Docker:
+For a Station Lite / Micro target, build the AArch64 musl binary with the
+installed cross-linker or in Docker:
 
 ```sh
-docker run --rm -v "$PWD":/home/rust/src -w /home/rust/src messense/rust-musl-cross:aarch64-musl cargo build --release
+sh tools/build-daemons.sh
+# alternatively:
+docker run --rm -v "$PWD":/home/rust/src -w /home/rust/src messense/rust-musl-cross:aarch64-musl cargo build --release --target aarch64-unknown-linux-musl --manifest-path yandexmicro/Cargo.toml --bin betteryamd-yandexmicro
 ```
 
 Do not commit `target/`, package archives, device data, credentials or logs.
@@ -38,7 +41,9 @@ Do not commit `target/`, package archives, device data, credentials or logs.
 - Advertise a feature in `DeviceProfile` only when its adapter is detectable and usable.
 - Keep path handling safe: package paths are relative and must reject parent components.
 - Long-running Lua packages must be cancellable through the shared cancellation token and should call `alice.sleep` or `alice.set` regularly.
-- Keep model-specific HTTP APIs, hardware drivers and capabilities inside that device's directory.
+- Keep the shared HTTP API and plugin runtime in `betteryam-runtime/`; keep
+  model-specific hardware drivers and adapter configuration in that device's
+  directory.
 - Report unsupported device features as unavailable; do not silently route them to another device daemon.
 
 ## Package conventions

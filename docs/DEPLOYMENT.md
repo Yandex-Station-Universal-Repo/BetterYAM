@@ -66,14 +66,13 @@ CLI обращается к `http://<колонка>:8099`; адрес можн�
 
 ## YAM API и capability profile
 
-CLI и общая Web Panel подключаются к HTTP API BetterYAMd. API и hardware backend
-реализуются для конкретного устройства; frontend панели должен быть общим, а
-доступные разделы и действия определяются capabilities профиля, не моделью.
-Yandex Mini реализован в `yandexmini/`: `main.rs` содержит API и plugin runtime,
-`led.rs` — аппаратную функцию LED. Контракт интеграции панели описан в
-[WEB_PANEL_INTEGRATION.md](./WEB_PANEL_INTEGRATION.md).
+CLI и общая Web Panel подключаются к HTTP API BetterYAMd. HTTP API и plugin
+runtime реализованы один раз в `betteryam-runtime/`; daemon каждого устройства
+передаёт runtime adapter и hardware backend. Frontend панели общий, а доступные
+разделы и действия определяются capabilities профиля, не моделью. Контракт
+интеграции панели описан в [WEB_PANEL_INTEGRATION.md](./WEB_PANEL_INTEGRATION.md).
 
-`GET /device` возвращает `id`, `model`, `architecture`, `led_count`, `features`
+`GET /api/device` возвращает `id`, `model`, `architecture`, `led_count`, `features`
 и словарь `capabilities` с boolean значениями. `features` сохраняется для
 совместимости с manifest compatibility; `capabilities` отвечает за доступность
 каждой отдельной операции/возможности. Отсутствующий capability считается
@@ -95,61 +94,39 @@ Yandex Mini реализован в `yandexmini/`: `main.rs` содержит AP
 
 | Маршрут | Контракт |
 | --- | --- |
-| `GET /device` | Профиль, feature list и булевы capabilities |
-| `POST /led`, `POST /led/off` | `{colors: ["#RRGGBB", ...]}` / выключить LED |
-| `GET /sensors`, `GET /sensors/{id}` | Список `{id, kind, unit, value}` и чтение сенсора |
-| `POST /sensors/ambient-light/configure` | `{name, gain, integration_ms}` |
-| `GET /clock`, `PUT /clock` | `ClockInfo`; запрос принимает `time`, `brightness`, `segments` или `off` |
+| `GET /api/device` | Профиль, feature list и boolean capabilities |
+| `POST /api/led`, `POST /api/led/off` | `{colors: ["#RRGGBB", ...]}` / выключить LED |
+| `GET /api/sensors`, `GET /api/sensors/{id}` | Список `{id, kind, unit, value}` и чтение сенсора |
+| `GET /api/clock`, `PUT /api/clock` | Состояние часов; запрос принимает `time`, `brightness`, `segments` или `off` |
 | `GET /api/volume`, `PUT /api/volume` | Получение уровня; установка `{percent}` |
-| `POST /audio/play` | Тело запроса — PCM WAV bytes; максимум 64 MiB и 600 секунд |
-| `POST /api/runtime/{id}/audio/play` | То же для binary plugins; требуются runtime token и permission `audio` |
+| `POST /api/runtime/{id}/led`, `POST /api/runtime/{id}/led/off` | LED frame / выключить LED; runtime token и permission `led` |
+| `POST /api/runtime/{id}/logo`, `POST /api/runtime/{id}/logo/off` | Logo frame / выключить; runtime token и permission `led` |
+| `POST /api/runtime/{id}/audio/play` | PCM WAV bytes, максимум 64 MiB и 600 секунд; runtime token и permission `audio` |
+| `POST /api/runtime/{id}/clock` | Управление часами; runtime token и permission `clock` |
+| `GET/PUT /api/runtime/{id}/volume` | Получение/установка `{percent}`; runtime token и permission `volume` |
 | `GET /api/bluetooth/status` | JSON-статус |
 | `PUT /api/bluetooth/power` | `{on: boolean}`; доступно только когда Quasar остановлен |
-| `GET /display/backlights` | Список доступных backlight IDs |
-| `PUT /display/backlight` | `{name, value}` |
 | `GET /api/runtime/:id/input/devices` | Разрешённые package input device names; runtime token и permission `input` обязательны |
 | `POST /api/runtime/:id/input/next-event` | `{devices, timeout_ms}`; только объявленные package устройства |
-| `POST /ipc/alarm/next`, `/ipc/speech/next` | `{timeout_ms}`, ответ — event или `null` |
+| `/api/runtime/{id}/bluetooth/status`, `/api/runtime/{id}/bluetooth/power` | Bluetooth status/power; runtime token и permission `bluetooth` |
+| `/api/runtime/{id}/wifi` и его subroutes `/scan`, `/networks`, `/networks/{ssid}`, `/setup` | Wi-Fi API; runtime token и permission `wifi` |
 
-В текущем Mini backend реализованы LED ring (`led.ring.rgb` и `led.ring.6`),
-чтение доступных Linux input event devices (`input.devices`,
-`input.next_event`) и громкость через ALSA control `Master` на card 0.
-Громкость 0..100 отображается на ALSA integer range; capability включается,
-если `amixer` может прочитать control. Input capability включается только если
-event-устройства доступны daemon-процессу; пакет может читать только имена из
-`[input].devices`. Остальные перечисленные операции/API оставлены в runtime,
-но Mini сообщает для неподдерживаемых операций `capabilities: false` и
-возвращает понятную ошибку до появления hardware-реализации. Audio playback
-доступен через `aplay`, если команда успешно перечисляет ALSA playback devices;
-поддерживается только mono/stereo PCM WAV с sample rate 8..192 kHz и длительностью
-не более 600 секунд. Операция передаёт данные через временный файл, удаляет его
-после завершения и отменяется при остановке plugin. Proximity sensor
-обнаруживается через Linux `ABS_DISTANCE`; API отдаёт значение в mm, если оно
-лежит в допустимом диапазоне 0..8192, иначе `value: null`. На проверенном Mini
-live API вернул `819 mm`; физическое воспроизведение аудио не проверялось.
-Bluetooth status читается из `rfkill` и
-`bsa_server`; capability status сохраняется доступной. Включение/выключение вызывает системный
-`bsa_server_run.sh`. Power capability и каждая команда power проверяют
-`pidof quasar_launcher2` и `pidof maind`; при работающем Quasar операция
-отклоняется с причиной `quasar running, not verified`. Проверка выполняется
-при каждом вызове, не только при старте daemon.
-Сканирование, pair/connect/disconnect/remove и управление discoverable
-недоступны: проверенный интерфейс для них требует долгоживущий `bt_demo`,
-который перезапускает `bsa_server`. BetterYAM его не запускает. Из
-`bt_devices.xml` данные и секреты не читаются и не выдаются. Lua сохраняет
-прежние методы, а
-`alice.<api>.is_available()` и `device.capabilities["<capability>"]` позволяют
-проверить доступность без вызова операции. Для сегментов часов сохраняется
-вызов `alice.clock.segments({...})`; теперь этот callable API также предоставляет
-`alice.clock.segments.is_available()`.
-
-LED frames для Mini должны содержать ровно шесть цветов. Аппаратный драйвер
-останавливает запуск, если `/dev/i2c-0` или LED controller недоступны.
+Общий runtime сохраняет прежний Lua API и permissions. LED frame должен
+содержать ровно `device.led_count` цветов; порядок RGB/BGR и способ записи
+определяет hardware adapter. Профили Mini и Lite имеют разные LED counts и
+backend-ы. Остальные аппаратные возможности сообщаются динамически и зависят
+от устройства, обнаруженных системных интерфейсов и безопасных условий
+выполнения. Наличие маршрута или Lua-метода не означает, что операция
+поддерживается на конкретном устройстве. Проверяйте точные capabilities
+профиля; сигнатуры и ограничения Lua API собраны в
+[каталоге функций](./functions/README.md), сведения об адаптерах — в
+[матрице поддержки устройств](./DEVICE_SUPPORT.md).
 
 ## Wi-Fi и своя сеть для настройки с телефона
 
-Раздел «Wi-Fi» в Web UI и API работают через `wpa_cli` с тем же
-wpa_supplicant, которым управляет прошивка колонки. Сеть добавляется ключом,
+Раздел «Wi-Fi» в Web UI и API используют Wi-Fi adapter. На устройствах с
+поддерживаемым `wpa_cli` он работает с тем же wpa_supplicant, которым управляет
+прошивка колонки. Сеть добавляется ключом,
 выведенным из пароля (PBKDF2, как `wpa_passphrase`): пароль не хранится и не
 попадает в командную строку. Сохраняется `save_config` в конфигурацию самого
 wpa_supplicant, поэтому прошивка видит её как свою. Capabilities `wifi`,
@@ -195,11 +172,10 @@ BetterYAMd, dnsmasq и udhcpd не нужны. Выбранная сеть до�
 запустит wpa_supplicant, пока поднята своя сеть, она сразу снимается: с
 Wi-Fi прошивки BetterYAMd не спорит.
 
-Точку доступа поднимает `hostapd`. В прошивке Mini его нет, а
-wpa_supplicant собран без режима точки доступа, поэтому нужен статический
-`hostapd` (nl80211) для armv7 в `<data dir>/bin/hostapd` или в `PATH`. Без
-него capability `wifi.ap` равна `false`, а раздел Wi-Fi говорит, что своя
-сеть недоступна. По умолчанию своя сеть выключена (`settings.toml`):
+Точку доступа поднимает `hostapd`, если это поддерживают драйвер и прошивка
+устройства. Укажите путь к совместимому `hostapd` в `<data dir>/bin/hostapd`
+или `PATH`. Без рабочего backend capability `wifi.ap` равна `false`. По
+умолчанию своя сеть выключена (`settings.toml`):
 
 ```toml
 [wifi_setup]

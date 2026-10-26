@@ -56,25 +56,17 @@ boolean-словарь `capabilities`, заполненные модельным
 `alice.logo.off` — совместимые aliases основных LED-функций. `alice.set`
 использует `device.led_count`; проверку frame выполняет драйвер этой модели.
 
-Для Yandex Mini доступны отдельные описания методов Lua API в
-[каталоге API устройства](../yandexmini/docs/api/README.md): аргументы,
-результаты, permission, примеры и фактическая доступность на Mini.
+Подробные сигнатуры, permissions, результаты и примеры приведены в общем
+[каталоге функций](./functions/README.md). Это контракт runtime, а не обещание,
+что каждая операция реализована на каждом устройстве. Фактическая доступность
+определяется boolean capabilities из профиля `device`; смотрите
+[матрицу поддержки адаптеров](./DEVICE_SUPPORT.md).
 
-Например, Yandex Mini сообщает `led.ring.rgb` и `led.ring.6` как доступные.
-`input` доступен, когда daemon обнаружил доступные `/dev/input/event*`
-устройства; package должен перечислить точные имена в `[input].devices`.
-`volume` доступен, если обнаружен ALSA mixer `Master` на card 0. Bluetooth
-status доступен через rfkill/BSA adapter. Power доступен только пока не
-работают процессы `quasar_launcher2` и `maind`; перед каждым изменением
-состояние проверяется повторно. Scan, pair/connect/disconnect/remove и
-discoverable остаются недоступными, пока нет безопасного API без перезапуска
-`bsa_server`. Audio playback доступен, если `aplay` обнаруживает playback
-устройство; принимаются PCM WAV-файлы до 64 MiB и 600 секунд, остановка
-плагина отменяет воспроизведение. Proximity sensors обнаруживаются через
-доступные Linux input devices с `ABS_DISTANCE`; значение возвращается в mm,
-а показания вне диапазона 0..8192 возвращаются как `nil`. Доступность
-display, управления sensors, clock и IPC зависит от подтверждённого адаптера;
-сейчас эти capabilities остаются `false`.
+Например, LED API принимает число цветов из `device.led_count`; профиль, а не
+Lua-код плагина, задаёт hardware-specific параметры. Датчики, input, volume,
+audio, Bluetooth и Wi-Fi объявляются доступными только при обнаружении их
+backend. Capability отдельной операции может быть `false`, даже если соседние
+операции той же группы доступны.
 
 ## Совместимость и сеть
 

@@ -195,7 +195,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "betteryamd-yandexmicro"
+name = "betteryam-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -224,32 +224,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "betteryamd-yandexmicro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "betteryam-runtime",
+]
+
+[[package]]
 name = "betteryamd-yandexmini"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
- "clap",
- "flate2",
+ "betteryam-runtime",
  "libc",
- "mlua",
- "pbkdf2",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "socket2",
- "tar",
- "tokio",
- "toml",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "walkdir",
- "zip",
 ]
 
 [[package]]

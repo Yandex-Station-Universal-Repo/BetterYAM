@@ -6,15 +6,18 @@
 
 ## Как устроена поддержка устройств
 
-Сейчас каждое семейство устройств реализуется отдельным daemon crate в
-собственном каталоге. Daemon предоставляет HTTP API и обслуживает hardware
-этой модели. CLI `byam` подключается к daemon, а установщик выбирает daemon по
-hostname устройства и корневому [`manifest.json`](../manifest.json).
+Общий HTTP API и plugin runtime находятся в [`betteryam-runtime/`](../betteryam-runtime/).
+Каждый daemon crate содержит тонкий entry point и adapter конкретного устройства:
+adapter сообщает профиль и предоставляет hardware backend через интерфейс
+[`device.rs`](../betteryam-runtime/src/device.rs). Общий runtime не должен знать
+модельные sysfs paths, I2C параметры или число LED. CLI `byam` подключается к
+daemon, а установщик выбирает отдельный daemon asset по hostname и корневому
+[`manifest.json`](../manifest.json).
 
-Для примера структуры и текущего API изучите [`yandexmini/`](../yandexmini/),
-но не копируйте Mini hardware код и его ограничения в новую модель. Число
-светодиодов, наличие функций и другие аппаратные свойства должны определяться
-реальным устройством.
+Для примера адаптеров изучите [`yandexmini/adapter.rs`](../yandexmini/adapter.rs)
+и [`yandexmicro/adapter.rs`](../yandexmicro/adapter.rs). Не копируйте аппаратные
+параметры из существующего адаптера. Общий код возможностей добавляйте в
+runtime; hardware access — в adapter/backend соответствующего устройства.
 
 ## Что выяснить до реализации
 
@@ -45,16 +48,17 @@ hostname устройства и корневому [`manifest.json`](../manifes
    [`docs/PLUGIN_API.md`](./PLUGIN_API.md),
    [`docs/PACKAGES.md`](./PACKAGES.md) и
    [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md). Сверьте маршруты и поля профиля с
-   текущим daemon в `yandexmini/main.rs` и аппаратными модулями в `yandexmini/`.
+   runtime в `betteryam-runtime/src/lib.rs` и существующими adapters.
    Не меняйте API плагинов или контракт `byam`, если задача явно не требует
    отдельного совместимого изменения.
 
-2. **Добавьте отдельный daemon crate.** Создайте каталог с коротким
-   lowercase ID, например `vendor_model/`, со своим `Cargo.toml`, исполняемым
-   daemon и hardware-модулями. Добавьте crate в явный список `members`
-   корневого `Cargo.toml`, чтобы он участвовал в workspace checks и tests.
-   Держите model-specific HTTP API,
-   обнаружение hardware и драйверы внутри каталога устройства.
+2. **Добавьте adapter и daemon entry point.** Создайте отдельный crate с
+   коротким lowercase ID, добавьте его в workspace и зависимость на
+   `betteryam-runtime`. Entry point должен передать runtime тип, реализующий
+   `DeviceAdapter`; аппаратная реализация реализует узкие backend traits и
+   остаётся в каталоге этого устройства. Не копируйте HTTP API и plugin runtime.
+   Если аппаратные действия отличаются только параметрами, используйте общий
+   backend с конфигурацией вместо копирования драйвера.
 
 3. **Сохраните HTTP-контракт BetterYAM.** Совместимый daemon должен
    предоставлять API и runtime endpoints, которые ожидают CLI и существующие
@@ -125,6 +129,9 @@ sh -n install.sh
 BUILD_WITH_DOCKER=1 sh tools/build-daemons.sh
 ```
 
+При нативной сборке скрипт использует установленные
+`arm-linux-musleabihf-gcc` и `aarch64-linux-musl-gcc`, если они доступны.
+
 Этот скрипт собирает все daemon entries из manifest, а не только новый crate.
 Если локальная среда не поддерживает целевой Rust target, явно укажите это в
 PR и приложите результат подходящей CI-сборки. Не заявляйте успешную работу
@@ -158,12 +165,15 @@ hardware, если её не проверяли на целевом устрой
 Работай до готового изменения, а не только до плана:
 1. Прочитай AGENTS.md, docs/ADDING_DEVICES.md, docs/PLUGIN_API.md,
    docs/PACKAGES.md, docs/DEPLOYMENT.md, root manifest.json,
-   tools/build-daemons.sh и текущий daemon в yandexmini/.
+   tools/build-daemons.sh, общий `betteryam-runtime/` и adapters в
+   `yandexmini/` и `yandexmicro/`.
 2. Сначала определи текущий HTTP/API и plugin-runtime contract, workspace,
-   build target и release manifest format. Не предполагай, что Mini-specific
+   build target и release manifest format. Не предполагай, что device-specific
    драйвер или его аппаратные параметры подходят новому устройству.
-3. Реализуй отдельный daemon crate в каталоге с lowercase ID. Изолируй
-   hardware implementation и model-specific детали в каталоге устройства.
+3. Реализуй отдельный daemon crate с lowercase ID и тонкий entry point,
+   передающий runtime свой `DeviceAdapter`. Изолируй hardware implementation
+   и model-specific детали в каталоге устройства; общий API и plugin runtime
+   повторно не реализуй.
    Поддержи существующий API и совместимость плагинов; не меняй Lua API,
    permission model или CLI для обхода отсутствующей hardware-функции.
 4. Добавь в Device profile только реально поддерживаемые features и boolean

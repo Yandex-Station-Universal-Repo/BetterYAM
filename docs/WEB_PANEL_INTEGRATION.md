@@ -1,16 +1,16 @@
 # Контракт подключения общей Web Panel
 
 Этот документ описывает точки подключения для общей панели BetterYAM. Панель
-одна для всех устройств; модельные daemon предоставляют профиль, доступность
-возможностей и HTTP API. Frontend не должен содержать ветвлений по модели или
-управлять устройством напрямую.
+одна для всех устройств; daemon adapters предоставляют профиль и hardware
+backends, а общий runtime обслуживает HTTP API. Frontend не должен содержать
+ветвлений по модели или управлять устройством напрямую.
 
 ## Основной принцип
 
 1. При загрузке панели запросить `GET /api/device`.
 2. Использовать `device.capabilities` для определения доступных разделов,
    полей и действий.
-3. Показывать изображение, указанное профилем устройства.
+3. Показывать нейтральный placeholder для устройства.
 4. Вызывать API только для доступных действий и отображать ошибки API
    пользователю.
 
@@ -21,18 +21,19 @@ Lua-функции вроде `alice.led.is_available()` и
 
 ## Профиль устройства
 
-Текущий `GET /api/device` возвращает:
+`GET /api/device` возвращает профиль. Ниже показан шаблон: `<count>` означает
+число LED из профиля и заменяется фактическим значением.
 
-```json
+```text
 {
-  "id": "yandexmini",
-  "model": "YandexStationMini",
-  "architecture": "armv7",
-  "led_count": 6,
-  "features": ["led.ring.rgb", "led.ring.6"],
+  "id": "<device id>",
+  "model": "<device model>",
+  "architecture": "<device architecture>",
+  "led_count": <count>,
+  "features": ["led.ring.rgb", "led.ring.<count>"],
   "capabilities": {
     "led.ring.rgb": true,
-    "led.ring.6": true,
+    "led.ring.<count>": true,
     "wifi": false
   },
   "source": "device profile"
@@ -46,21 +47,8 @@ Lua-функции вроде `alice.led.is_available()` и
 недоступной. Не определяйте возможности по `model`, имени устройства,
 `led_count` или наличию маршрута.
 
-Для индивидуального изображения профилю нужно предоставить необязательное
-поле `image` — same-origin URL к статическому изображению устройства, например:
-
-```json
-{
-  "id": "yandexmini",
-  "image": "/assets/devices/yandexmini.svg"
-}
-```
-
-Это поле пока отсутствует в текущем `DeviceProfile`; чтобы подключить
-изображения через профиль, backend должен добавить его в `GET /api/device`
-и раздавать соответствующие assets. Общая панель отображает `image`, если оно
-есть, и использует нейтральное изображение-заполнитель, если нет. Не добавляйте
-в общий frontend таблицы вида `if (device.id === "...")`.
+`image` пока не является частью `DeviceProfile`; панель использует нейтральный
+placeholder. Не добавляйте в общий frontend ветвления по `device.id`.
 
 ## HTTP API панели
 
@@ -125,12 +113,12 @@ Capability описывает поддержку операции устройс
 
 ## Точки подключения в репозитории
 
-- `yandexmini/web/index.html` — текущая встроенная панель и пример вызовов API.
-- `yandexmini/main.rs` — HTTP routes, `DeviceProfile` и обработчики API.
-- `yandexmini/led.rs` — профиль capabilities, публикуемый Mini backend.
+- `betteryam-runtime/src/web/index.html` — общая встроенная панель и пример вызовов API.
+- `betteryam-runtime/src/lib.rs` — HTTP routes, `DeviceProfile` и обработчики API.
+- `betteryam-runtime/src/led.rs` — общий профиль capabilities и LED API.
+- `yandexmini/adapter.rs`, `yandexmicro/adapter.rs` — модельные hardware adapters.
 - `docs/DEPLOYMENT.md` — описание общего Device API и capabilities.
 
-Сейчас HTML панели находится внутри каталога Mini. При переходе на общий
-frontend его исходник и assets должны стать общими для daemon-ов и встраиваться
-при сборке каждого устройства; модельные backend должны предоставлять только
-профиль, capabilities, API реализацию и собственное изображение.
+Общий frontend встраивается в daemon при сборке. Модельные adapters
+предоставляют аппаратные backend и профиль; общий runtime обслуживает HTTP API
+и плагинный контракт.

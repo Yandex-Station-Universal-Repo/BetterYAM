@@ -87,6 +87,14 @@ for entry in manifest["devices"]:
                     "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER",
                     compiler,
                 )
+        elif target == "aarch64-unknown-linux-musl":
+            compiler = "aarch64-linux-musl-gcc"
+            if shutil.which(compiler):
+                build_env.setdefault("CC_aarch64_unknown_linux_musl", compiler)
+                build_env.setdefault(
+                    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+                    compiler,
+                )
         command = cargo_command
     print(f"Building {device}: {' '.join(command)}", flush=True)
     subprocess.run(command, cwd=root, check=True, env=build_env)
